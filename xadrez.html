@@ -1,0 +1,849 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><title>Xadrez</title><style>
+:root{--bg:#0f172a;--fg:#e5e7eb;--board-border:#e5e7eb;--sq-dark:#c19a6b;--sq-light:#f3d9b1}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;padding:16px}
+h1{text-align:center;margin:8px 0 12px;font-weight:600;font-size:clamp(20px,4.6vw,28px)}
+#clocks{text-align:center;margin-bottom:10px;display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
+#clocks span{background:rgba(255,255,255,.08);border:1px solid rgba(229,231,235,.3);padding:4px 8px;border-radius:10px;font-variant-numeric:tabular-nums}
+#board{width:min(92vw,520px);aspect-ratio:1/1;margin:0 auto;display:grid;grid-template-columns:repeat(8,1fr);grid-template-rows:repeat(8,1fr);border:2px solid var(--board-border);background:#ddd;border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.35)}
+.sq{display:flex;align-items:center;justify-content:center;font-size:clamp(22px,9vw,38px);cursor:pointer;user-select:none}
+.d{background:var(--sq-dark)}.l{background:var(--sq-light)}
+.sel{outline:3px solid #38bdf8}.opt{outline:3px solid #f59e0b}
+.turn{margin:6px 0;text-align:center;font-size:clamp(14px,3.8vw,16px)}
+#status{text-align:center;margin-bottom:6px;font-size:clamp(14px,3.8vw,16px)}
+#ui{display:flex;gap:8px;justify-content:center;align-items:center;margin:12px auto;flex-wrap:wrap;max-width:min(92vw,520px)}
+#ui label{display:flex;align-items:center;gap:6px;font-size:clamp(14px,3.8vw,15px)}
+#ui select,#ui input[type=checkbox],#ui input[type=range]{font-size:14px;padding:6px;border-radius:8px;border:1px solid rgba(229,231,235,.25);background:rgba(255,255,255,.06);color:var(--fg)}
+#ui button{padding:8px 12px;border-radius:10px;border:1px solid rgba(229,231,235,.25);background:#1f2937;color:var(--fg);box-shadow:0 2px 8px rgba(0,0,0,.38)}
+#ui button:hover{filter:brightness(1.08)}
+#ui button:active{transform:translateY(1px)}
+@media(max-width:600px){body{padding:12px}#ui{gap:10px}}
+</style></head><body><h1>Jogo de Xadrez</h1><div class="turn" id="turn"></div><div id="status" style="text-align:center;margin-bottom:6px"></div><div id="clocks" style="text-align:center;margin-bottom:6px">Brancas: <span id="clockW">--:--</span> • Pretas: <span id="clockB">--:--</span></div><div id="board"></div><div id="ui"><label>Modo:<select id="mode"><option value="pvp">Jogador vs Jogador</option><option value="ai">Jogador vs IA</option></select></label><label>Nível:<select id="level"><option value="facil">Fácil</option><option value="medio">Médio</option><option value="dificil">Difícil</option><option value="tal">Muito Difícil (Tal)</option></select></label><label>Tempo:<select id="time"><option value="classica">Clássica (60:00)</option><option value="rapida">Rápida (15:00)</option><option value="blitz" selected>Blitz (5:00)</option><option value="bullet">Bullet (1:00)</option></select></label><label>Som:<input id="snd" type="checkbox" checked></label><label>Volume:<input id="vol" type="range" min="0" max="100" value="100"></label><button id="reset">Reiniciar</button><button id="draw">Empatar</button><button id="resign">Desistir</button></div><script>const U={white:{K:"\u2654",Q:"\u2655",R:"\u2656",B:"\u2657",N:"\u2658",P:"\u2659"},black:{K:"\u265A",Q:"\u265B",R:"\u265C",B:"\u265D",N:"\u265E",P:"\u265F"}};let g,turn,sel=null,opts=[],mode='ai',level='medio';const bd=document.getElementById('board');document.getElementById('mode').onchange=e=>{mode=e.target.value};document.getElementById('level').onchange=e=>{level=e.target.value};document.getElementById('reset').onclick=init;
+const btnDraw=document.getElementById('draw');
+const btnResign=document.getElementById('resign');
+if(btnDraw){ btnDraw.onclick=()=>{ 
+  if(mode==='ai'){ playSound('draw'); endGame('Empate aceito'); return; }
+  // PvP: alternar oferta de empate para o lado atual
+  if(!drawOffer){ drawOffer=turn; updateStatus(); syncDrawButtons(); }
+  else if(drawOffer && drawOffer!==turn){ // lado oposto aceitou
+    playSound('draw'); endGame('Empate por acordo'); drawOffer=null; syncDrawButtons();
+  } else { // mesmo lado clicou de novo -> cancela
+    drawOffer=null; updateStatus(); syncDrawButtons();
+  }
+}; }
+if(btnResign){ btnResign.onclick=()=>{
+  const ok = confirm('Tem certeza que deseja desistir?');
+  if(!ok) return;
+  const winner = turn==='white' ? 'Pretas vencem por desistência' : 'Brancas vencem por desistência';
+  playSound('resign');
+  endGame(winner);
+}; }
+// Inicialização robusta do DOM
+(function(){
+  const start=()=>{ try{ init(); updateStatus(); }catch(e){ console.error(e); } };
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', start);
+  else start();
+})();
+// Controle de volume global
+const volEl=document.getElementById('vol'); let currentVol=1.0; if(volEl){ currentVol=Math.max(0,Math.min(1, volEl.value/100)); volEl.oninput=e=>{ currentVol=Math.max(0,Math.min(1, e.target.value/100)); }; }
+
+// Orientação do tabuleiro (true = brancas em baixo)
+let whiteBottom=true;
+// Adiciona botão de girar na UI
+const uiEl=document.getElementById('ui');
+if(uiEl&&!document.getElementById('flip')){const flipBtn=document.createElement('button');flipBtn.id='flip';flipBtn.textContent='Girar';flipBtn.onclick=()=>{whiteBottom=!whiteBottom;render()};uiEl.appendChild(flipBtn)}
+
+// Adicionar botões Aceitar/Recusar para oferta de empate (PvP)
+(function(){
+  const uiEl=document.getElementById('ui');
+  if(uiEl && !document.getElementById('drawAccept')){
+    const acc=document.createElement('button'); acc.id='drawAccept'; acc.textContent='Aceitar'; acc.style.display='none'; uiEl.appendChild(acc);
+    const dec=document.createElement('button'); dec.id='drawDecline'; dec.textContent='Recusar'; dec.style.display='none'; uiEl.appendChild(dec);
+    acc.onclick=()=>{
+      if(mode==='pvp' && drawOffer && drawOffer!==turn){ playSound('draw'); endGame('Empate por acordo'); drawOffer=null; syncDrawButtons(); }
+    };
+    dec.onclick=()=>{
+      if(mode==='pvp' && drawOffer && drawOffer!==turn){ drawOffer=null; updateStatus(); syncDrawButtons(); }
+    };
+  }
+})();
+function syncDrawButtons(){
+  const btnDraw=document.getElementById('draw');
+  const acc=document.getElementById('drawAccept');
+  const dec=document.getElementById('drawDecline');
+  if(!btnDraw||!acc||!dec) return;
+  if(mode==='pvp' && drawOffer){ btnDraw.style.display='none'; acc.style.display='inline-block'; dec.style.display='inline-block'; }
+  else { btnDraw.style.display='inline-block'; acc.style.display='none'; dec.style.display='none'; }
+}
+
+// Relógios de Xadrez
+let timeMode = 'blitz'; let tW=300, tB=300; let timer=null; let lastTick=null;
+// en passant (quadrado alvo disponível por um turno)
+let enp=null; // {x,y,forColor}
+// Regras de empate: relógio de 50 lances e repetição de posição
+let halfmoveClock=0; // conta meias-jogadas desde última captura ou movimento de peão
+let posCounts={}; // mapa de posições para tripla repetição
+ let drawOffer=null; // oferta de empate atual ('white' ou 'black')
+ const clockWEl = document.getElementById('clockW');
+const clockBEl = document.getElementById('clockB');
+const timeSel = document.getElementById('time');
+if(timeSel){ timeSel.onchange = e=>{ timeMode=e.target.value; setupTime(); resetClockUI(); } }
+
+function setupTime(){
+  if(timeMode==='classica'){ tW=tB=60*60; }
+  else if(timeMode==='rapida'){ tW=tB=15*60; }
+  else if(timeMode==='blitz'){ tW=tB=5*60; }
+  else { tW=tB=60; }
+}
+function format(t){ const m=Math.floor(t/60); const s=Math.floor(Math.max(0,t%60)); return String(m).padStart(2,'0')+":"+String(s).padStart(2,'0'); }
+function resetClockUI(){ if(clockWEl) clockWEl.textContent=format(tW); if(clockBEl) clockBEl.textContent=format(tB); }
+function initClock(){ setupTime(); resetClockUI(); if(timer){clearInterval(timer); timer=null;} lastTick=null; }
+function startClock(){ if(timer) return; lastTick=Date.now(); timer=setInterval(tick, 200); }
+function stopClock(){ if(timer){ clearInterval(timer); timer=null; } }
+function switchClock(){ lastTick=Date.now(); }
+function tick(){
+  if(!lastTick) return;
+  const now=Date.now();
+  const dt=(now-lastTick)/1000; // segundos fracionários
+  lastTick=now;
+  if(turn==='white'){
+    tW=Math.max(0,tW-dt);
+    if(clockWEl) clockWEl.textContent=format(tW);
+    if(tW<=0) timeOver('white');
+  }else{
+    tB=Math.max(0,tB-dt);
+    if(clockBEl) clockBEl.textContent=format(tB);
+    if(tB<=0) timeOver('black');
+  }
+}
+function timeOver(color){ stopClock(); const winner = (color==='white') ? 'Pretas vencem por tempo' : 'Brancas vencem por tempo'; const el=document.getElementById('status'); if(el) el.textContent='Tempo esgotado! '+winner; playSound('mate'); bd.querySelectorAll('.sq').forEach(s=> s.onclick=null); }
+function init(){enp=null;halfmoveClock=0;posCounts={};drawOffer=null;moveHistory=[];fullmoveNumber=1;gameResult='*';g=[...Array(8)].map(_=>Array(8).fill(null));turn='white';// peças
+for(let x=0;x<8;x++){g[1][x]={t:'P',c:'white',m:false};g[6][x]={t:'P',c:'black',m:false} }
+[['R','N','B','Q','K','B','N','R']].forEach(arr=>{for(let x=0;x<8;x++)g[0][x]={t:arr[x],c:'white',m:false};for(let x=0;x<8;x++)g[7][x]={t:arr[x],c:'black',m:false} });render();updTurn();initClock();recordPosition();syncDrawButtons();renderMoves();
+}
+function render(){
+  bd.innerHTML='';
+  for(let yd=0;yd<8;yd++){
+    for(let xd=0;xd<8;xd++){
+      const x = whiteBottom ? xd : 7 - xd;
+      const y = whiteBottom ? 7 - yd : yd;
+      const d=document.createElement('div');
+      d.className='sq '+(((xd+yd)%2)?'d':'l');
+      d.dataset.x=x; d.dataset.y=y;
+      const p=g[y][x];
+      if(p){
+        const color=(p.c==='white'?'#f9fafb':'#111827');
+        const shadow=(p.c==='white'?'text-shadow:0 0 2px #000;':'');
+        d.innerHTML='<span style="color:'+color+';'+shadow+'">'+U[p.c][p.t]+'</span>';
+      }
+      bd.appendChild(d);
+    }
+  }
+  doHighlight();
+  bd.querySelectorAll('.sq').forEach(s=>s.onclick=onClick)
+}
+function doHighlight(){
+  if(sel){
+    const el = bd.querySelector('.sq[data-x="'+sel.x+'"][data-y="'+sel.y+'"]');
+    if(el) el.classList.add('sel');
+  }
+  for(const m of opts){
+    const el = bd.querySelector('.sq[data-x="'+m.x+'"][data-y="'+m.y+'"]');
+    if(el) el.classList.add('opt');
+  }
+}
+function updTurn(){document.getElementById('turn').textContent='Turno: '+(turn==='white'?'Branco':'Preto')}
+function onClick(e){const x=+e.currentTarget.dataset.x,y=+e.currentTarget.dataset.y,p=g[y][x];if(sel){const mv=opts.find(m=>m.x===x&&m.y===y);if(mv)return doMove(sel.x,sel.y,mv);sel=null;opts=[];render();return}if(p&&p.c===turn){sel={x,y};opts=legalMoves(x,y);render()}}
+function inB(x,y){return x>=0&&x<8&&y>=0&&y<8}
+function legalMoves(x,y){const p=g[y][x];let ms=pseudoMoves(x,y);return ms.filter(m=>legalAfter(x,y,m))}
+function pseudoMoves(x,y){const p=g[y][x],ms=[];if(!p)return ms;const add=(nx,ny)=>{if(!inB(nx,ny))return;const q=g[ny][nx];if(!q)ms.push({x:nx,y:ny});else if(q.c!==p.c)ms.push({x:nx,y:ny,cap:true})};if(p.t==='N'){for(const [dx,dy] of [[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]])add(x+dx,y+dy)}else if(p.t==='B'||p.t==='R'||p.t==='Q'){const dirs=[];if(p.t!=='R')dirs.push([1,1],[1,-1],[-1,1],[-1,-1]);if(p.t!=='B')dirs.push([1,0],[-1,0],[0,1],[0,-1]);for(const [dx,dy]of dirs){let nx=x+dx,ny=y+dy;while(inB(nx,ny)&&!g[ny][nx]){ms.push({x:nx,y:ny});nx+=dx;ny+=dy}if(inB(nx,ny)&&g[ny][nx]&&g[ny][nx].c!==p.c)ms.push({x:nx,y:ny,cap:true})}}else if(p.t==='K'){
+    for(const [dx,dy] of [[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]]) add(x+dx,y+dy);
+    // roque
+    const hasMoved = !!p.m; const rank=y;
+    if(!hasMoved && x===4 && (rank===0||rank===7) && !isCheck(g,p.c)){
+      // pequeno (rei para g, torre h->f)
+      const rookK=g[rank][7];
+      if(rookK && rookK.t==='R' && rookK.c===p.c && !rookK.m){
+        if(!g[rank][5] && !g[rank][6] && !attacked(g,p.c,5,rank) && !attacked(g,p.c,6,rank)) ms.push({x:6,y:rank,castle:'K'});
+      }
+      // grande (rei para c, torre a->d)
+      const rookQ=g[rank][0];
+      if(rookQ && rookQ.t==='R' && rookQ.c===p.c && !rookQ.m){
+        if(!g[rank][1] && !g[rank][2] && !g[rank][3] && !attacked(g,p.c,3,rank) && !attacked(g,p.c,2,rank)) ms.push({x:2,y:rank,castle:'Q'});
+      }
+    }
+  }else if(p.t==='P'){
+    const dir=p.c==='white'?1:-1;
+    // capturas normais + en passant
+    for(const dx of[-1,1]){
+      const cx=x+dx,cy=y+dir;
+      if(inB(cx,cy)&&g[cy][cx]&&g[cy][cx].c!==p.c) ms.push({x:cx,y:cy,cap:true});
+      // en passant
+      if(enp && enp.forColor===p.c && enp.x===cx && enp.y===cy){
+        if(inB(cx,y)&&g[y][cx]&&g[y][cx].t==='P'&&g[y][cx].c!==p.c){
+          ms.push({x:cx,y:cy,cap:true,ep:true});
+        }
+      }
+    }
+    // avanço simples/duplo
+    const nx=x,ny=y+dir; if(inB(nx,ny)&&!g[ny][nx]){ ms.push({x:nx,y:ny}); const sy=p.c==='white'?1:6; const ny2=y+2*dir; if(y===sy&&inB(nx,ny2)&&!g[ny2][nx]&&!g[ny][nx]) ms.push({x:nx,y:ny2}); }
+  }
+  return ms}
+function legalAfter(x,y,m){const s=clone(g);apply(s,x,y,m);return !isCheck(s,turn)}
+function isCheck(s,color){let kx=-1,ky=-1;for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(p&&p.c===color&&p.t==='K'){kx=x;ky=y}}const opp=color==='white'?'black':'white';// gerar ataques do oponente
+for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+  const p=s[y][x];
+  if(!p||p.c!==opp) continue;
+  let at=pseudoOn(s,x,y);
+  if(p.t==='P') at = at.filter(m=>m.cap); // peões só atacam nas diagonais
+  if(at.some(m=>m.x===kx&&m.y===ky)) return true
+}return false}
+function attacked(s,color,x,y){
+  const opp = color==='white'?'black':'white';
+  for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++){
+    const p=s[yy][xx]; if(!p||p.c!==opp) continue;
+    let at=[];
+    if(p.t==='K'){
+      // rei ataca as 8 adjacentes; não considera roque
+      for(const [dx,dy] of [[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]]){
+        const nx=xx+dx, ny=yy+dy; if(inB(nx,ny)) at.push({x:nx,y:ny});
+      }
+    }else{
+      at = pseudoOn(s,xx,yy);
+      at = at.filter(m=>!m.castle);
+      if(p.t==='P') at = at.filter(m=>m.cap);
+    }
+    if(at.some(m=>m.x===x && m.y===y)) return true;
+  }
+  return false;
+}
+function pseudoOn(s,x,y){
+  const p=s[y][x],ms=[]; if(!p) return ms;
+  const add=(nx,ny)=>{ if(!inB(nx,ny)) return; const q=s[ny][nx]; if(!q) ms.push({x:nx,y:ny}); else if(q.c!==p.c) ms.push({x:nx,y:ny,cap:true}); };
+  if(p.t==='N'){
+    for(const[dx,dy]of[[1,2],[2,1],[-1,2],[-2,1],[1,-2],[2,-1],[-1,-2],[-2,-1]]) add(x+dx,y+dy);
+  }else if(p.t==='B'||p.t==='R'||p.t==='Q'){
+    const dirs=[]; if(p.t!=='R') dirs.push([1,1],[1,-1],[-1,1],[-1,-1]); if(p.t!=='B') dirs.push([1,0],[-1,0],[0,1],[0,-1]);
+    for(const[dx,dy]of dirs){ let nx=x+dx, ny=y+dy; while(inB(nx,ny)&&!s[ny][nx]){ ms.push({x:nx,y:ny}); nx+=dx; ny+=dy; } if(inB(nx,ny)&&s[ny][nx]&&s[ny][nx].c!==p.c) ms.push({x:nx,y:ny,cap:true}); }
+  }else if(p.t==='K'){
+    // Rei: apenas casas adjacentes. Roque será tratado em legalOn para evitar recursão com isCheck
+    for(const[dx,dy]of[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]]) add(x+dx,y+dy);
+  }else if(p.t==='P'){
+    const dir=p.c==='white'?1:-1; for(const dx of[-1,1]){ const cx=x+dx, cy=y+dir; if(inB(cx,cy)&&s[cy][cx]&&s[cy][cx].c!==p.c) ms.push({x:cx,y:cy,cap:true}); if(enp && enp.forColor===p.c && enp.x===cx && enp.y===cy){ if(inB(cx,y)&&s[y][cx]&&s[y][cx].t==='P'&&s[y][cx].c!==p.c){ ms.push({x:cx,y:cy,cap:true,ep:true}); } } }
+    const nx=x,ny=y+dir; if(inB(nx,ny)&&!s[ny][nx]) ms.push({x:nx,y:ny}); const sy=p.c==='white'?1:6; const ny2=y+2*dir; if(y===sy&&inB(nx,ny2)&&!s[ny2][nx]&&!s[ny][nx]) ms.push({x:nx,y:ny2});
+  }
+  return ms;
+}
+function legalAfter(x,y,m){const s=clone(g);apply(s,x,y,m);return !isCheck(s,turn)}
+function isCheck(s,color){let kx=-1,ky=-1;for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(p&&p.c===color&&p.t==='K'){kx=x;ky=y}}const opp=color==='white'?'black':'white';// gerar ataques do oponente
+for(let y=0;y<8;y++)for(let x=0;x<8;x++){
+  const p=s[y][x];
+  if(!p||p.c!==opp) continue;
+  let at=pseudoOn(s,x,y);
+  if(p.t==='P') at = at.filter(m=>m.cap); // peões só atacam nas diagonais
+  if(at.some(m=>m.x===kx&&m.y===ky)) return true
+}return false}
+function attacked(s,color,x,y){
+  const opp = color==='white'?'black':'white';
+  for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++){
+    const p=s[yy][xx]; if(!p||p.c!==opp) continue;
+    let at=[];
+    if(p.t==='K'){
+      // rei ataca as 8 adjacentes; não considera roque
+      for(const [dx,dy] of [[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]]){
+        const nx=xx+dx, ny=yy+dy; if(inB(nx,ny)) at.push({x:nx,y:ny});
+      }
+    }else{
+      at = pseudoOn(s,xx,yy);
+      at = at.filter(m=>!m.castle);
+      if(p.t==='P') at = at.filter(m=>m.cap);
+    }
+    if(at.some(m=>m.x===x && m.y===y)) return true;
+  }
+  return false;
+}
+
+function apply(s,x,y,m){const p=s[y][x];s[y][x]=null;// en passant captura: remover peão capturado atrás do alvo
+if(m.ep){ const dir = (p.c==='white'?1:-1); const cy=m.y - dir; const cx=m.x; if(s[cy][cx] && s[cy][cx].t==='P') s[cy][cx]=null; }
+// aplicar movimento/roque
+if(m.castle){
+  s[m.y][m.x]=p; if(s[m.y][m.x]) s[m.y][m.x].m=true;
+  if(m.castle==='K'){
+    const r=s[m.y][7]; s[m.y][7]=null; s[m.y][5]=r; if(s[m.y][5]) s[m.y][5].m=true;
+  }else if(m.castle==='Q'){
+    const r=s[m.y][0]; s[m.y][0]=null; s[m.y][3]=r; if(s[m.y][3]) s[m.y][3].m=true;
+  }
+}else{
+  s[m.y][m.x]=p; if(s[m.y][m.x]) s[m.y][m.x].m=true;
+}
+// promoção (suporta escolha via m.promote)
+if(p.t==='P' && ((p.c==='white'&&m.y===7) || (p.c==='black'&&m.y===0))){
+  const tp = m.promote || 'Q'; s[m.y][m.x] = {t:tp, c:p.c};
+}
+}
+
+// Sons (Web Audio)
+let AC=null;
+function getAC(){try{if(!AC) AC=new (window.AudioContext||window.webkitAudioContext)();}catch(e){} return AC;}
+function beep(freq=440,duration=0.08,type='sine',vol=0.1){const ac=getAC();if(!ac) return; const osc=ac.createOscillator(); const gain=ac.createGain(); osc.type=type; osc.frequency.value=freq; const v = Math.max(0, (typeof currentVol!=='undefined'?currentVol:1) * vol); gain.gain.value=v; osc.connect(gain); gain.connect(ac.destination); const now=ac.currentTime; osc.start(now); osc.stop(now+duration);} 
+function playSound(kind){
+  const chk=document.getElementById('snd');if(!chk||!chk.checked) return;
+  if(kind==='move') beep(420,0.06,'sine',0.12);
+  else if(kind==='cap') beep(240,0.08,'square',0.15);
+  else if(kind==='chk') beep(700,0.15,'triangle',0.18);
+  else if(kind==='mate') beep(900,0.25,'sawtooth',0.2);
+  else if(kind==='draw') beep(520,0.18,'sine',0.16);
+  else if(kind==='resign') beep(300,0.22,'square',0.18);
+} 
+
+function updateStatus(){
+  const el=document.getElementById('status');
+  const color=turn;
+  // limpar destaques anteriores
+  if(typeof bd!=='undefined' && bd && bd.children){for(let i=0;i<bd.children.length;i++){bd.children[i].style.outline='';bd.children[i].style.boxShadow='';}}
+  const s=clone(g);
+  if(isCheck(s,color)){
+    el.textContent='Xeque ao '+(color==='white'?'Branco':'Preto')+'!';
+    playSound('chk');
+    // destacar rei em xeque
+    let kx=-1,ky=-1;for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(p&&p.c===color&&p.t==='K'){kx=x;ky=y}}
+    if(kx>=0&&ky>=0&&bd){const elK=bd.querySelector('.sq[data-x="'+kx+'"][data-y="'+ky+'"]');if(elK){elK.style.outline='3px solid #ef4444';elK.style.boxShadow='0 0 6px #ef4444';}}
+  }else{
+     el.textContent='';
+   }
+   // Exibir oferta de empate se houver e não estiver em xeque
+   if(drawOffer && !isCheck(s,color)){
+     const side = drawOffer==='white' ? 'Brancas' : 'Pretas';
+     el.textContent = side + ' oferecem empate';
+   }
+   syncDrawButtons();
+   // Cheque-mate / afogamento
+   const ms=allLegal(g,turn);
+   if(ms.length===0){
+     if(isCheck(g,turn)){
+       endGame('Xeque-mate! '+(turn==='white'?'Pretas vencem':'Brancas vencem'));
+       playSound('mate');
+     }else{
+       endGame('Empate por afogamento (sem movimentos)');
+     }
+   }
+ }
+function clone(s){return s.map(r=>r.map(c=>c?{t:c.t,c:c.c,m:c.m}:null))}
+
+// UI de promoção simples
+let pendingMove=null;
+function needPromotion(p,m){return p && p.t==='P' && ((p.c==='white'&&m.y===7)||(p.c==='black'&&m.y===0));}
+function createPromoUI(){ if(document.getElementById('promo')) return; const d=document.createElement('div'); d.id='promo'; d.style.textAlign='center'; d.style.margin='8px'; d.style.display='none'; d.innerHTML='Promover para: <button data-p="Q">Dama</button> <button data-p="R">Torre</button> <button data-p="B">Bispo</button> <button data-p="N">Cavalo</button>'; const boardEl=document.getElementById('board'); if(boardEl && boardEl.parentNode){ boardEl.parentNode.insertBefore(d, boardEl); } else { document.body.appendChild(d); } }
+function showPromo(onPick){ createPromoUI(); const d=document.getElementById('promo'); d.style.display='block'; ['Q','R','B','N'].forEach(t=>{ const btn=d.querySelector('button[data-p="'+t+'"]'); if(btn) btn.onclick=()=>{ d.style.display='none'; onPick(t); }; }); }
+
+function execMove(x,y,m){
+  const p=g[y][x];
+  const capture=!!m.cap;
+  const s0=clone(g); // estado antes do movimento para SAN
+  const san = toSAN(s0,x,y,m);
+  // en passant anterior expira
+  enp=null;
+  apply(g,x,y,m);
+  // registrar SAN
+  if(p && p.c==='white'){ moveHistory.push({num:fullmoveNumber,w:san}); }
+  else { if(moveHistory.length===0) moveHistory.push({num:fullmoveNumber,w:'...'}); moveHistory[moveHistory.length-1].b=san; fullmoveNumber++; }
+  renderMoves();
+  // cancelar oferta de empate pendente ao realizar um lance
+  drawOffer=null; syncDrawButtons();
+  // atualiza relógio de 50 lances
+  if(capture || (p && p.t==='P')) halfmoveClock=0; else halfmoveClock++;
+  // se peão avançou duas casas, habilita en passant para o oponente
+  if(p && p.t==='P' && Math.abs(m.y - y)===2){ const dir=p.c==='white'?1:-1; const opp = (turn==='white'?'black':'white'); enp={x:x,y:y+dir,forColor:opp}; }
+  sel=null; opts=[]; turn=turn==='white'?'black':'white'; render(); updTurn(); updateStatus(); playSound(capture?'cap':'move'); startClock(); switchClock();
+  if(mode==='ai'&&turn==='black') setTimeout(()=>{
+    // IA: aceitar/recusar oferta de empate
+    if(drawOffer){ const s=clone(g); const sc=evalS(s); if(sc<=-50){ playSound('draw'); endGame('Empate aceito'); drawOffer=null; return; } else { drawOffer=null; updateStatus(); syncDrawButtons(); } }
+    runAI(); updateStatus();
+  }, thinkDelay());
+}
+
+function doMove(x,y,m){
+  const p=g[y][x];
+  const isPromo=needPromotion(p,m);
+  const humanTurn = (mode==='pvp') || (mode==='ai' && turn==='white');
+  if(isPromo && humanTurn){ pendingMove={x,y,m}; showPromo((piece)=>{ pendingMove.m.promote=piece; execMove(pendingMove.x,pendingMove.y,pendingMove.m); pendingMove=null; }); return; }
+  if(isPromo && !humanTurn){ m.promote='Q'; }
+  execMove(x,y,m);
+}
+
+function ai(){if(level==='facil')return aiEasy();if(level==='medio')return aiMed();if(level==='dificil')return aiHard();return aiTal()}
+function runAI(){
+  try{
+    const beforeTurn=turn;
+    ai();
+    // Se por algum motivo a IA falhar, garantir uma jogada simples em até 1,2s
+    setTimeout(()=>{ if(turn==='black') { try{ aiEasy(); }catch(_){} } }, 1200);
+  }catch(e){
+    // Fallback imediato
+    try{ aiEasy(); }catch(_){ /* se também falhar, não travar */ }
+  }
+}
+function thinkDelay(){
+  try{
+    let base=(level==='facil')?200:(level==='medio')?600:(level==='dificil')?1200:1600;
+    if(timeMode==='classica') base+=600; else if(timeMode==='rapida') base+=300; else if(timeMode==='blitz') base+=150; else if(timeMode==='bullet') base+=80;
+    if(level==='tal'){ base += 200 * (typeof compDepthTal==='function' ? compDepthTal() : 4); }
+    const jitter=Math.floor(Math.random()*200)-100;
+    return Math.max(50, base + jitter);
+  }catch(e){ return 250; }
+}
+function allLegal(s,color){let ms=[];for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(p&&p.c===color){const lm=legalOn(s,x,y);for(const m of lm)ms.push({x,y,m})}}return ms}
+function legalOn(s,x,y){
+  const p=s[y][x];
+  let ms=pseudoOn(s,x,y);
+  // adicionar roque aqui para evitar recursão com isCheck dentro de pseudoOn
+  if(p && p.t==='K'){
+    const hasMoved=!!p.m; const rank=y;
+    if(!hasMoved && x===4 && (rank===0||rank===7) && !isCheck(s,p.c)){
+      // pequeno (rei para g, torre h->f)
+      const rookK=s[rank][7];
+      if(rookK && rookK.t==='R' && rookK.c===p.c && !rookK.m){
+        if(!s[rank][5] && !s[rank][6] && !attacked(s,p.c,5,rank) && !attacked(s,p.c,6,rank)) ms.push({x:6,y:rank,castle:'K'});
+      }
+      // grande (rei para c, torre a->d)
+      const rookQ=s[rank][0];
+      if(rookQ && rookQ.t==='R' && rookQ.c===p.c && !rookQ.m){
+        if(!s[rank][1] && !s[rank][2] && !s[rank][3] && !attacked(s,p.c,3,rank) && !attacked(s,p.c,2,rank)) ms.push({x:2,y:rank,castle:'Q'});
+      }
+    }
+  }
+  return ms.filter(m=>{const c=clone(s);apply(c,x,y,m);return !isCheck(c,p.c)})
+}
+function evalS(s){let score=0;const val={P:100,N:320,B:320,R:500,Q:900,K:0};let mobB=0,mobW=0;for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(!p)continue;score+=p.c==='black'?val[p.t]:-val[p.t];if(p.c==='black')mobB+=pseudoOn(s,x,y).length;else mobW+=pseudoOn(s,x,y).length}return score+0.1*(mobB-mobW)}
+function aiEasy(){const ms=allLegal(g,'black');if(ms.length===0)return;const r=ms[Math.floor(Math.random()*ms.length)];doMove(r.x,r.y,r.m)}
+function aiMed(){const ms=allLegal(g,'black');if(ms.length===0)return;let best=ms[0],bs=-1e9;for(const mv of ms){const s=clone(g);apply(s,mv.x,mv.y,mv.m);const sc=evalS(s);if(sc>bs){bs=sc;best=mv}}doMove(best.x,best.y,best.m)}
+function aiHard(){const depth=compDepth();const s=clone(g);const r=minimax(s,depth,-1e9,1e9,true);if(r&&r.best)doMove(r.best.x,r.best.y,r.best.m)}
+function compDepth(){let pcs=0;for(let y=0;y<8;y++)for(let x=0;x<8;x++)if(g[y][x])pcs++;if(pcs<=10)return 4;if(pcs<=18)return 3;return 2}
+function minimax(s,d,a,b,max){const color=max?'black':'white';const ms=allLegal(s,color);if(d===0||ms.length===0){if(ms.length===0)return{score:max?-9999:9999};return{score:evalS(s)}}let best=null;if(max){let me=-1e9;for(const mv of order(ms)){const c=clone(s);apply(c,mv.x,mv.y,mv.m);const r=minimax(c,d-1,a,b,false);if(r.score>me){me=r.score;best=mv}a=Math.max(a,me);if(b<=a)break}return{score:me,best}}else{let mi=1e9;for(const mv of order(ms)){const c=clone(s);apply(c,mv.x,mv.y,mv.m);const r=minimax(c,d-1,a,b,true);if(r.score<mi){mi=r.score;best=mv}b=Math.min(b,mi);if(b<=a)break}return{score:mi,best}}}
+function order(ms){return ms.slice().sort((a,b)=>((b.m.cap?1:0)-(a.m.cap?1:0)))}
+// --- IA Tal (Mikhail Tal style): agressiva, profunda e tática ---
+function aiTal(){
+  const depth = compDepthTal();
+  const s = clone(g);
+  const r = minimaxTal(s, depth, -1e9, 1e9, true);
+  if(r && r.best) doMove(r.best.x, r.best.y, r.best.m);
+}
+
+function compDepthTal(){
+  // Profundidade maior e dinâmica conforme número de peças
+  let pcs=0; for(let y=0;y<8;y++) for(let x=0;x<8;x++) if(g[y][x]) pcs++;
+  if(pcs<=10) return 6; // finais mais profundos
+  if(pcs<=18) return 5;
+  return 4;
+}
+
+function evalAgg(s){
+  // Avaliação agressiva: material + mobilidade reforçada + segurança do rei + controle de centro + avanço de peões
+  const val={P:100,N:320,B:330,R:510,Q:900,K:0};
+  let score=0, mobB=0, mobW=0;
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const p=s[y][x]; if(!p) continue;
+    // material
+    score += (p.c==='black'? val[p.t] : -val[p.t]);
+    // mobilidade bruta
+    const mlen = pseudoOn(s,x,y).length;
+    if(p.c==='black') mobB += mlen; else mobW += mlen;
+    // centro: bonus por proximidade ao centro
+    const cx = Math.abs(3.5 - x), cy = Math.abs(3.5 - y); const centerBonus = Math.max(0, 3 - (cx+cy));
+    score += (p.c==='black'? +centerBonus*2 : -centerBonus*2);
+    // avanço de peões
+    if(p.t==='P'){
+      if(p.c==='black') score += (6 - y) * 5; else score -= (y - 1) * 5;
+    }
+  }
+  // segurança do rei: bônus por colocar o rei adversário em xeque
+  const inCheckWhite = isCheck(s,'white');
+  const inCheckBlack = isCheck(s,'black');
+  if(inCheckWhite) score += 50;
+  if(inCheckBlack) score -= 50;
+  // mobilidade reforçada
+  score += 0.2 * (mobB - mobW);
+  return score;
+}
+
+function minimaxTal(s, d, a, b, max){
+  const color = max ? 'black' : 'white';
+  const ms = allLegal(s, color);
+  // nó terminal ou profundidade 0: quiescence search para evitar efeito horizonte
+  if(d===0 || ms.length===0){
+    if(ms.length===0){
+      // cheque-mate ou afogamento: avaliar severamente
+      return { score: max ? -99999 : 99999 };
+    }
+    const qs = qSearch(s, a, b, max);
+    return { score: qs };
+  }
+  let best=null;
+  if(max){
+    let me=-1e9;
+    for(const mv of orderTal(ms, s, color)){
+      const c=clone(s);
+      apply(c, mv.x, mv.y, mv.m);
+      // extensão por cheque
+      const opp = 'white';
+      const ext = isCheck(c, opp) ? 1 : 0;
+      const r=minimaxTal(c, d-1+ext, a, b, false);
+      if(r.score>me){me=r.score;best=mv}
+      a=Math.max(a, me);
+      if(b<=a) break;
+    }
+    return { score: me, best };
+  } else {
+    let mi=1e9;
+    for(const mv of orderTal(ms, s, color)){
+      const c=clone(s);
+      apply(c, mv.x, mv.y, mv.m);
+      const opp = 'black';
+      const ext = isCheck(c, opp) ? 1 : 0;
+      const r=minimaxTal(c, d-1+ext, a, b, true);
+      if(r.score<mi){mi=r.score;best=mv}
+      b=Math.min(b, mi);
+      if(b<=a) break;
+    }
+    return { score: mi, best };
+  }
+}
+
+function qSearch(s, a, b, max){
+  // Stand pat
+  let stand = evalAgg(s);
+  if(max){ if(stand >= b) return stand; if(stand > a) a = stand; }
+  else { if(stand <= a) return stand; if(stand < b) b = stand; }
+  const color = max ? 'black' : 'white';
+  const caps = allLegal(s, color).filter(mv => !!mv.m.cap);
+  if(caps.length===0) return stand;
+  for(const mv of orderTal(caps, s, color)){
+    const c=clone(s); apply(c, mv.x, mv.y, mv.m);
+    const score = qSearch(c, a, b, !max);
+    if(max){
+      if(score > a) a = score;
+      if(a >= b) return a;
+    } else {
+      if(score < b) b = score;
+      if(b <= a) return b;
+    }
+  }
+  return max ? a : b;
+}
+
+
+function givesCheckOn(s, mv){
+  const c=clone(s); apply(c, mv.x, mv.y, mv.m);
+  const mover = s[mv.y][mv.x];
+  if(!mover) return 0;
+  const opp = mover.c==='black' ? 'white' : 'black';
+  return isCheck(c, opp) ? 1 : 0;
+}
+
+// --- IA Tal (Mikhail Tal style): agressiva, profunda e tática ---
+function aiTal(){
+  const depth = compDepthTal();
+  const s = clone(g);
+  const r = minimaxTal(s, depth, -1e9, 1e9, true);
+  if(r && r.best) doMove(r.best.x, r.best.y, r.best.m);
+}
+
+function compDepthTal(){
+  // Profundidade maior e dinâmica conforme número de peças
+  let pcs=0; for(let y=0;y<8;y++) for(let x=0;x<8;x++) if(g[y][x]) pcs++;
+  if(pcs<=10) return 6; // finais mais profundos
+  if(pcs<=18) return 5;
+  return 4;
+}
+
+function evalAgg(s){
+  // Avaliação agressiva: material + mobilidade reforçada + segurança do rei + controle de centro + avanço de peões
+  const val={P:100,N:320,B:330,R:510,Q:900,K:0};
+  let score=0, mobB=0, mobW=0;
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const p=s[y][x]; if(!p) continue;
+    // material
+    score += (p.c==='black'? val[p.t] : -val[p.t]);
+    // mobilidade bruta
+    const mlen = pseudoOn(s,x,y).length;
+    if(p.c==='black') mobB += mlen; else mobW += mlen;
+    // centro: bonus por proximidade ao centro
+    const cx = Math.abs(3.5 - x), cy = Math.abs(3.5 - y); const centerBonus = Math.max(0, 3 - (cx+cy));
+    score += (p.c==='black'? +centerBonus*2 : -centerBonus*2);
+    // avanço de peões
+    if(p.t==='P'){
+      if(p.c==='black') score += (6 - y) * 5; else score -= (y - 1) * 5;
+    }
+  }
+  // segurança do rei: bônus por colocar o rei adversário em xeque
+  const inCheckWhite = isCheck(s,'white');
+  const inCheckBlack = isCheck(s,'black');
+  if(inCheckWhite) score += 50;
+  if(inCheckBlack) score -= 50;
+  // mobilidade reforçada
+  score += 0.2 * (mobB - mobW);
+  return score;
+}
+
+function minimaxTal(s, d, a, b, max){
+  const color = max ? 'black' : 'white';
+  const ms = allLegal(s, color);
+  // nó terminal ou profundidade 0: quiescence search para evitar efeito horizonte
+  if(d===0 || ms.length===0){
+    if(ms.length===0){
+      // cheque-mate ou afogamento: avaliar severamente
+      return { score: max ? -99999 : 99999 };
+    }
+    const qs = qSearch(s, a, b, max);
+    return { score: qs };
+  }
+  let best=null;
+  if(max){
+    let me=-1e9;
+    for(const mv of orderTal(ms, s, color)){
+      const c=clone(s);
+      apply(c, mv.x, mv.y, mv.m);
+      // extensão por cheque
+      const opp = 'white';
+      const ext = isCheck(c, opp) ? 1 : 0;
+      const r=minimaxTal(c, d-1+ext, a, b, false);
+      if(r.score>me){me=r.score;best=mv}
+      a=Math.max(a, me);
+      if(b<=a) break;
+    }
+    return { score: me, best };
+  } else {
+    let mi=1e9;
+    for(const mv of orderTal(ms, s, color)){
+      const c=clone(s);
+      apply(c, mv.x, mv.y, mv.m);
+      const opp = 'black';
+      const ext = isCheck(c, opp) ? 1 : 0;
+      const r=minimaxTal(c, d-1+ext, a, b, true);
+      if(r.score<mi){mi=r.score;best=mv}
+      b=Math.min(b, mi);
+      if(b<=a) break;
+    }
+    return { score: mi, best };
+  }
+}
+
+function qSearch(s, a, b, max){
+  // Stand pat
+  let stand = evalAgg(s);
+  if(max){ if(stand >= b) return stand; if(stand > a) a = stand; }
+  else { if(stand <= a) return stand; if(stand < b) b = stand; }
+  const color = max ? 'black' : 'white';
+  const caps = allLegal(s, color).filter(mv => !!mv.m.cap);
+  if(caps.length===0) return stand;
+  for(const mv of orderTal(caps, s, color)){
+    const c=clone(s); apply(c, mv.x, mv.y, mv.m);
+    const score = qSearch(c, a, b, !max);
+    if(max){
+      if(score > a) a = score;
+      if(a >= b) return a;
+    } else {
+      if(score < b) b = score;
+      if(b <= a) return b;
+    }
+  }
+  return max ? a : b;
+}
+
+function orderTal(ms, s, color){
+  // Priorizar cheques, depois capturas por MVV-LVA, depois demais
+  const valMap = {P:100,N:320,B:330,R:510,Q:900,K:10000};
+  function mvv(mv){
+    const victim = s[mv.m.y][mv.m.x]; // no estado atual
+    const attacker = s[mv.y][mv.x];
+    const vv = victim ? valMap[victim.t] : 0;
+    const av = attacker ? valMap[attacker.t] : 0;
+    return vv - av;
+  }
+  return ms.slice().sort((a,b)=>{
+    const aCheck = givesCheckOn(s, a);
+    const bCheck = givesCheckOn(s, b);
+    if(aCheck!==bCheck) return bCheck - aCheck; // true(1) primeiro
+    const ac = a.m.cap ? 1 : 0;
+    const bc = b.m.cap ? 1 : 0;
+    if(ac!==bc) return bc - ac; // capturas primeiro
+    if(ac && bc){ // MVV-LVA
+      const diff = mvv(b) - mvv(a);
+      if(diff!==0) return diff;
+    }
+    // fallback: heurística de mobilidade futura simples
+    const cA=clone(s); apply(cA,a.x,a.y,a.m);
+    const cB=clone(s); apply(cB,b.x,b.y,b.m);
+    const mobA = allLegal(cA, color).length;
+    const mobB = allLegal(cB, color).length;
+    return mobB - mobA;
+  });
+}
+
+function givesCheckOn(s, mv){
+  const c=clone(s); apply(c, mv.x, mv.y, mv.m);
+  const mover = s[mv.y][mv.x];
+  if(!mover) return 0;
+  const opp = mover.c==='black' ? 'white' : 'black';
+  return isCheck(c, opp) ? 1 : 0;
+}
+// --- Funções de empate ---
+function endGame(msg){
+  try{ stopClock(); }catch(_){}
+  const el=document.getElementById('status'); if(el) el.textContent=msg;
+  gameResult = resultFromMsg(msg);
+  if(bd) bd.querySelectorAll('.sq').forEach(s=> s.onclick=null);
+}
+function getCastleRights(s){
+  const wK = s[0][4] && s[0][4].t==='K' && s[0][4].c==='white' && !s[0][4].m;
+  const wRk = s[0][7] && s[0][7].t==='R' && s[0][7].c==='white' && !s[0][7].m;
+  const wRq = s[0][0] && s[0][0].t==='R' && s[0][0].c==='white' && !s[0][0].m;
+  const bK = s[7][4] && s[7][4].t==='K' && s[7][4].c==='black' && !s[7][4].m;
+  const bRk = s[7][7] && s[7][7].t==='R' && s[7][7].c==='black' && !s[7][7].m;
+  const bRq = s[7][0] && s[7][0].t==='R' && s[7][0].c==='black' && !s[7][0].m;
+  let rights=''; if(wK&&wRk) rights+='K'; if(wK&&wRq) rights+='Q'; if(bK&&bRk) rights+='k'; if(bK&&bRq) rights+='q'; return rights||'-';
+}
+function getPositionKey(s,side,enp){
+  let b='';
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const p=s[y][x]; b+= p ? (p.c[0]+p.t) : '.';
+  }
+  const ep = enp ? (enp.x+','+enp.y+','+enp.forColor) : '-';
+  const rights = getCastleRights(s);
+  return b+'|'+side+'|'+rights+'|'+ep;
+}
+function recordPosition(){ const key=getPositionKey(g,turn,enp); posCounts[key]=(posCounts[key]||0)+1; }
+function insufficientMaterial(s){
+  let w={p:0,n:0,b:0,r:0,q:0}, b={p:0,n:0,b:0,r:0,q:0};
+  const wbColors=[], bbColors=[];
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const p=s[y][x]; if(!p) continue;
+    if(p.c==='white'){
+      if(p.t==='P') w.p++; else if(p.t==='N') w.n++; else if(p.t==='B'){ w.b++; wbColors.push((x+y)%2); } else if(p.t==='R') w.r++; else if(p.t==='Q') w.q++;
+    } else {
+      if(p.t==='P') b.p++; else if(p.t==='N') b.n++; else if(p.t==='B'){ b.b++; bbColors.push((x+y)%2); } else if(p.t==='R') b.r++; else if(p.t==='Q') b.q++;
+    }
+  }
+  // qualquer peão, torre ou dama presentes -> não é material insuficiente
+  if(w.q+w.r+w.p>0 || b.q+b.r+b.p>0) return false;
+  const wMin = w.b + w.n; const bMin = b.b + b.n;
+  if(wMin===0 && bMin===0) return true; // K vs K
+  if(wMin<=1 && bMin===0) return true; // K+minor vs K
+  if(bMin<=1 && wMin===0) return true; // K vs K+minor
+  if(w.b===1 && b.b===1 && w.n===0 && b.n===0){ // K+B vs K+B (mesma cor)
+    const wColor = wbColors[0]; const bColor = bbColors[0]; if(typeof wColor!=='undefined' && typeof bColor!=='undefined' && wColor===bColor) return true;
+  }
+  if(w.n===1 && b.n===1 && w.b===0 && b.b===0) return true; // K+N vs K+N
+  return false;
+}
+function checkDrawConditions(){
+  if(halfmoveClock>=100) return 'Empate (regra dos 50 lances)';
+  const key=getPositionKey(g,turn,enp); if(posCounts[key]>=3) return 'Empate por tripla repetição';
+  if(insufficientMaterial(g)) return 'Empate por material insuficiente';
+  return null;
+}
+
+// --- Notação SAN e PGN ---
+function toSAN(s0,x,y,m){
+  const p=s0[y][x]; if(!p) return '';
+  // roque
+  if(m.castle){
+    let san = (m.castle==='K') ? 'O-O' : 'O-O-O';
+    const c=clone(s0); apply(c,x,y,m);
+    const opp = p.c==='white' ? 'black' : 'white';
+    const inChk = isCheck(c, opp);
+    const oppMoves = allLegal(c, opp);
+    if(inChk && oppMoves.length===0) san += '#'; else if(inChk) san += '+';
+    return san;
+  }
+  const piece = p.t==='P' ? '' : p.t;
+  const fromFile = 'abcdefgh'[x];
+  const dest = 'abcdefgh'[m.x] + (m.y+1);
+  const capture = !!m.cap;
+  let san='';
+  if(piece){
+    // desambiguação mínima
+    let candidates=[];
+    for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++){
+      if(xx===x && yy===y) continue;
+      const q=s0[yy][xx]; if(!q || q.c!==p.c || q.t!==p.t) continue;
+      const lm = legalOn(s0, xx, yy);
+      if(lm.some(mm=>mm.x===m.x && mm.y===m.y)) candidates.push({xx,yy});
+    }
+    let dis='';
+    if(candidates.length>0){
+      const sameFile = candidates.some(c=>c.xx===x);
+      const sameRank = candidates.some(c=>c.yy===y);
+      if(sameFile && !sameRank) dis = (y+1);
+      else if(sameRank && !sameFile) dis = fromFile;
+      else dis = fromFile + (y+1);
+    }
+    san = piece + (dis?dis:'') + (capture?'x':'') + dest;
+  }else{
+    san = capture ? (fromFile + 'x' + dest) : dest;
+  }
+  if(p.t==='P' && m.promote) san += '=' + m.promote;
+  if(m.ep) san += ' e.p.';
+  const c=clone(s0); apply(c,x,y,m);
+  const opp = p.c==='white' ? 'black' : 'white';
+  const inChk = isCheck(c, opp);
+  const oppMoves = allLegal(c, opp);
+  if(inChk && oppMoves.length===0) san += '#'; else if(inChk) san += '+';
+  return san;
+}
+
+function renderMoves(){
+  // criar painel se não existir
+  let panel=document.getElementById('movesPanel');
+  if(!panel){
+    panel=document.createElement('div'); panel.id='movesPanel';
+    panel.style.maxWidth='min(92vw,520px)'; panel.style.margin='10px auto'; panel.style.background='rgba(255,255,255,.06)';
+    panel.style.border='1px solid rgba(229,231,235,.25)'; panel.style.borderRadius='10px'; panel.style.padding='8px';
+    const title=document.createElement('div'); title.textContent='Lances'; title.style.fontWeight='600'; title.style.marginBottom='6px'; panel.appendChild(title);
+    const list=document.createElement('div'); list.id='movesList'; list.style.fontSize='14px'; panel.appendChild(list);
+    const boardEl=document.getElementById('board'); if(boardEl && boardEl.parentNode){ boardEl.parentNode.insertBefore(panel, boardEl.nextSibling); }
+  }
+  let list=document.getElementById('movesList'); if(!list){ list=document.createElement('div'); list.id='movesList'; panel.appendChild(list); }
+  const parts=[]; for(const mv of moveHistory){ parts.push(mv.num+'. '+mv.w + (mv.b?(' '+mv.b):'')); }
+  list.textContent = parts.join(' ');
+  // botão Exportar PGN
+  const uiEl=document.getElementById('ui');
+  if(uiEl && !document.getElementById('exportPGN')){
+    const btn=document.createElement('button'); btn.id='exportPGN'; btn.textContent='Exportar PGN';
+    btn.onclick=()=>{
+      const pgn=buildPGN();
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(pgn).then(()=>{ alert('PGN copiado para a área de transferência'); }).catch(()=>{ prompt('PGN', pgn); });
+      }else{ prompt('PGN', pgn); }
+    };
+    uiEl.appendChild(btn);
+  }
+}
+
+function buildPGN(){
+  function pad(n){return String(n).padStart(2,'0');}
+  function today(){ const d=new Date(); return d.getFullYear()+'.'+pad(d.getMonth()+1)+'.'+pad(d.getDate()); }
+  const headers=[
+    '[Event "Casual Game"]',
+    '[Site "Local"]',
+    '[Date "'+today()+'"]',
+    '[Round "1"]',
+    '[White "Brancas"]',
+    '[Black "Pretas"]',
+    '[Result "'+(gameResult||'*')+'"]'
+  ].join('\n');
+  const moves=[]; for(const mv of moveHistory){ moves.push(mv.num+'. '+mv.w + (mv.b?(' '+mv.b):'')); }
+  const body = moves.join(' ') + ' ' + (gameResult||'*');
+  return headers+'\n\n'+body;
+}
+
+function resultFromMsg(msg){
+  const s=(msg||'').toLowerCase();
+  if(s.includes('brancas vencem')) return '1-0';
+  if(s.includes('pretas vencem')) return '0-1';
+  if(s.includes('empate')) return '1/2-1/2';
+  return '*';
+}
+</script>
+ </body>
+ </html>

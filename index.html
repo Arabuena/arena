@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Arena Arabuenã — Jogos de Raciocínio</title>
+<meta name="description" content="Arena Arabuenã — jogos de raciocínio em HTML5. Jogue Xadrez online, suporte via Pix.">
+<style>
+:root{--bg:#071028;--card:#0b1220;--muted:#94a3b8;--accent:#06b6d4;--glass:rgba(255,255,255,0.04);--glass2:rgba(255,255,255,0.02)}
+*{box-sizing:border-box}
+body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#e6eef8;background:linear-gradient(180deg,#031025 0%, #071028 100%);-webkit-font-smoothing:antialiased}
+.header{max-width:1100px;margin:18px auto;padding:18px 20px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.brand{display:flex;align-items:center;gap:12px}
+.logo{width:56px;height:56px;border-radius:10px;background:linear-gradient(135deg,var(--accent),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700;color:#021627}
+.title{font-size:18px;font-weight:700}
+.tag{color:var(--muted);font-size:13px}
+.main{max-width:1100px;margin:0 auto;display:grid;grid-template-columns:1fr 340px;gap:18px;padding:0 18px 60px}
+.card{background:var(--card);border-radius:12px;padding:12px;border:1px solid rgba(255,255,255,0.03);box-shadow:0 8px 30px rgba(2,6,23,0.6)}
+.play{min-height:520px;display:flex;flex-direction:column;gap:10px}
+.hrow{display:flex;align-items:center;gap:10px}
+.btn{background:var(--accent);color:#021627;border:none;padding:10px 12px;border-radius:10px;font-weight:600;cursor:pointer}
+.small{padding:6px 8px;border-radius:8px;background:var(--glass);border:1px solid rgba(255,255,255,0.02);font-size:13px;color:#e6eef8}
+.games-list{display:flex;gap:8px;flex-wrap:wrap}
+.game-pill{padding:8px 10px;border-radius:8px;background:var(--glass2);border:1px solid rgba(255,255,255,0.02);cursor:pointer}
+.right-col{display:flex;flex-direction:column;gap:12px}
+.support .pix{background:linear-gradient(180deg,rgba(255,255,255,0.02),transparent);padding:12px;border-radius:10px}
+.kv{font-weight:700;margin-bottom:6px}
+.copy{display:inline-flex;gap:8px;align-items:center}
+.footer{max-width:1100px;margin:18px auto;padding:12px 18px;color:var(--muted);font-size:13px;text-align:center}
+@media(max-width:940px){.main{grid-template-columns:1fr}.header{padding:12px}.play{min-height:420px}}
+</style>
+</head>
+<body>
+<header class="header">
+  <div class="brand">
+    <div class="logo">AA</div>
+    <div>
+      <div class="title">Arena Arabuenã — Jogos de Raciocínio</div>
+      <div class="tag">Jogue Xadrez online — Grátis · Desenvolvido por Arabuenã Peçanha Gomes</div>
+    </div>
+  </div>
+  <div class="hrow">
+    <button class="btn" id="playNow">Jogar Xadrez</button>
+    <a class="small" href="#support">Apoiar (Pix)</a>
+  </div>
+</header>
+
+<main class="main">
+  <section class="card play" id="playArea">
+    <div style="display:flex;align-items:center;justify-content:space-between">
+      <div style="font-weight:700">Xadrez — PvP / PvC (IA inclusa)</div>
+      <div style="color:var(--muted);font-size:13px">Modo: <span id="modeLabel">IA / PvP</span></div>
+    </div>
+
+    <div id="gameWrapper" style="flex:1;display:flex;align-items:center;justify-content:center;">
+      <!-- Aqui o jogo será injetado (iframe ou bloco) -->
+      <div id="chessFrame" style="width:100%;max-width:920px;">
+        <!-- O jogo de xadrez em HTML/JS será incorporado aqui. -->
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;justify-content:space-between;align-items:center;margin-top:8px">
+      <div class="games-list">
+        <div class="game-pill" data-game="chess">Xadrez</div>
+        <div class="game-pill" data-game="dames">Damas (em breve)</div>
+        <div class="game-pill" data-game="tictactoe">Velha (em breve)</div>
+        <div class="game-pill" data-game="memory">Memória (em breve)</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="small" id="exportPGN">Exportar PGN</button>
+        <button class="small" id="downloadApp">Baixar App (PWA)</button>
+      </div>
+    </div>
+  </section>
+
+  <aside class="right-col">
+    <div class="card support" id="support">
+      <div style="font-weight:700;margin-bottom:8px">Apoie o projeto</div>
+      <div class="pix">
+        <div class="kv">PIX — Arabuenã Peçanha Gomes</div>
+        <div style="color:var(--muted);font-size:13px;margin-bottom:8px">Chave PIX (Telefone / CNPJ):</div>
+        <div style="font-size:16px;font-weight:700">(62) 98216-2844</div>
+        <div style="color:var(--muted);font-size:13px;margin:8px 0">Banco: C6 Bank</div>
+        <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+          <div class="copy">
+            <button class="small" id="copyPix">Copiar PIX</button>
+            <button class="small" id="copyCNome">Copiar Nome</button>
+          </div>
+        </div>
+        <div style="margin-top:10px;color:var(--muted);font-size:13px">Quer o QR code pronto? Posso gerar o QR (imagem) para você baixar — diga "Gerar QR".</div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="font-weight:700;margin-bottom:8px">Versão Premium (PRO)</div>
+      <div style="color:var(--muted);font-size:13px">Desbloqueie:</div>
+      <ul style="margin:8px 0 0 18px;color:var(--muted)">
+        <li>IA níveis extras</li>
+        <li>Temas de tabuleiro</li>
+        <li>Sem anúncios</li>
+        <li>Estatísticas e rankings</li>
+      </ul>
+      <div style="margin-top:12px;display:flex;gap:8px">
+        <button class="btn" id="buyPro">Comprar PRO — R$ 9,90</button>
+        <button class="small" id="contact">Contato</button>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<footer class="footer">
+  © 2025 Arena Arabuenã — Feito com HTML5. Suporte: Pix.
+</footer>
+
+<script>
+function ensureIframe(){
+  const container=document.getElementById('chessFrame');
+  if(!container) return null;
+  let iframe=container.querySelector('iframe');
+  if(!iframe){
+    iframe=document.createElement('iframe');
+    iframe.src='xadrez.html';
+    iframe.title='Xadrez';
+    iframe.style.width='100%';
+    iframe.style.minHeight='640px';
+    iframe.style.border='none';
+    iframe.setAttribute('loading','eager');
+    container.appendChild(iframe);
+  }
+  return iframe;
+}
+
+document.getElementById('playNow').onclick=function(){
+  const iframe=ensureIframe();
+  document.getElementById('playArea').scrollIntoView({behavior:'smooth',block:'start'});
+};
+
+document.querySelectorAll('.game-pill').forEach(el=>{
+  el.addEventListener('click',()=>{
+    if(el.dataset.game==='chess'){
+      ensureIframe();
+      document.getElementById('playArea').scrollIntoView({behavior:'smooth',block:'start'});
+    } else {
+      alert('Este jogo estará disponível em breve!');
+    }
+  });
+});
+
+const PIX_KEY='(62) 98216-2844';
+const NOME='Arabuenã Peçanha Gomes';
+document.getElementById('copyPix').onclick=async()=>{
+  try{ await navigator.clipboard.writeText(PIX_KEY); alert('PIX copiado para a área de transferência'); }
+  catch(e){ prompt('PIX', PIX_KEY); }
+};
+document.getElementById('copyCNome').onclick=async()=>{
+  try{ await navigator.clipboard.writeText(NOME); alert('Nome copiado para a área de transferência'); }
+  catch(e){ prompt('Nome', NOME); }
+};
+
+document.getElementById('exportPGN').onclick=async()=>{
+  const iframe=ensureIframe();
+  if(!iframe){ alert('Abra o jogo de Xadrez primeiro.'); return; }
+  try{
+    const w=iframe.contentWindow;
+    if(w && typeof w.buildPGN==='function'){
+      const pgn=w.buildPGN();
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        await navigator.clipboard.writeText(pgn);
+        alert('PGN copiado para a área de transferência');
+      } else {
+        prompt('PGN', pgn);
+      }
+    } else {
+      alert('Faça alguns lances e tente novamente.');
+    }
+  }catch(e){
+    try{
+      const pgn=iframe.contentWindow && iframe.contentWindow.buildPGN ? iframe.contentWindow.buildPGN() : '';
+      if(pgn) prompt('PGN', pgn); else alert('Não foi possível exportar o PGN agora.');
+    }catch(_){ alert('Não foi possível acessar o jogo para exportar PGN.'); }
+  }
+};
+
+document.getElementById('downloadApp').onclick=()=>{
+  alert('A versão PWA estará disponível em breve.');
+};
+
+document.getElementById('buyPro').onclick=()=>{
+  alert('Obrigado pelo interesse! A versão PRO ficará disponível em breve.');
+};
+
+document.getElementById('contact').onclick=()=>{
+  window.location.href='mailto:contato@arabuenagomes.dev?subject=Arena%20Arabuen%C3%A3%20-%20Contato';
+};
+</script>
+</body>
+</html>

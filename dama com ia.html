@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Damas - PvP e IA</title>
+<style>
+body {
+  background: #0f1724;
+  color: white;
+  font-family: Arial, sans-serif;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100vh;
+  margin: 0;
+}
+#board {
+  display: grid;
+  grid-template-columns: repeat(8, 70px);
+  grid-template-rows: repeat(8, 70px);
+  border: 4px solid white;
+  margin-bottom: 10px;
+}
+.cell {
+  width: 70px;
+  height: 70px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.cell.dark { background: #b58863; }
+.cell.light { background: #f0d9b5; }
+.cell.highlight { outline: 3px solid yellow; }
+.piece {
+  width: 50px;
+  height: 50px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+.piece.red { background: #b22222; }
+.piece.black { background: black; }
+.piece.king { border: 3px solid gold; }
+.selected { outline: 3px solid cyan; }
+#info { margin-bottom: 10px; font-size: 1.2em; }
+#controls {
+  display: flex;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+button {
+  padding: 6px 12px;
+  font-size: 1em;
+  cursor: pointer;
+}
+#score {
+  margin-bottom: 10px;
+}
+</style>
+</head>
+<body>
+
+<h1>♟️ Jogo de Damas</h1>
+<div id="info">Turno: <span id="turn">Vermelho</span></div>
+<div id="score">
+  Vermelho: <span id="redScore">12</span> | Preto: <span id="blackScore">12</span>
+</div>
+
+<div id="board"></div>
+
+<div id="controls">
+  <button onclick="toggleAI()">Modo: <span id="modeLabel">PvP</span></button>
+  <select id="aiLevel" aria-label="Nível da IA">
+    <option value="facil">Fácil</option>
+    <option value="medio" selected>Médio</option>
+    <option value="dificil">Difícil</option>
+  </select>
+  <button onclick="resetGame()">🔄 Reiniciar</button>
+</div>
+
+<script>
+const board = document.getElementById('board');
+const turnEl = document.getElementById('turn');
+const redScoreEl = document.getElementById('redScore');
+const blackScoreEl = document.getElementById('blackScore');
+const modeLabel = document.getElementById('modeLabel');
+const aiLevelSelect = document.getElementById('aiLevel');
+
+let game = [];
+let selected = null;
+let currentTurn = 'red';
+let possibleMoves = [];
+let useAI = false;
+let redCount = 12, blackCount = 12;
+let aiLevel = 'medio';
+
+ailevelSelectExistsFix = (function(){ try { return !!aiLevelSelect; } catch(e) { return false; } })();
+if (ailevelSelectExistsFix) {
+  aiLevelSelect.addEventListener('change', () => {
+    aiLevel = aiLevelSelect.value;
+  });
+}
+
+function initBoard() {
+  board.innerHTML = '';
+  game = [];
+  for (let y = 0; y < 8; y++) {
+    game[y] = [];
+    for (let x = 0; x < 8; x++) {
+      const cell = document.createElement('div');
+      cell.classList.add('cell');
+      cell.classList.add((x + y) % 2 === 0 ? 'light' : 'dark');
+      cell.dataset.x = x;
+      cell.dataset.y = y;
+      board.appendChild(cell);
+
+      if ((x + y) % 2 !== 0 && y < 3) game[y][x] = { color: 'black', king: false };
+      else if ((x + y) % 2 !== 0 && y > 4) game[y][x] = { color: 'red', king: false };
+      else game[y][x] = null;
+
+      cell.addEventListener('click', () => onCellClick(x, y));
+    }
+  }
+  renderBoard();
+  updateTurn();
+}
+
+function renderBoard() {
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const cell = board.children[y * 8 + x];
+      cell.innerHTML = '';
+      cell.classList.remove('highlight');
+      if (game[y][x]) {
+        const piece = document.createElement('div');
+        piece.classList.add('piece', game[y][x].color);
+        if (game[y][x].king) piece.classList.add('king');
+        if (selected && selected.x === x && selected.y === y)
+          piece.classList.add('selected');
+        cell.appendChild(piece);
+      }
+    }
+  }
+  highlightMoves();
+}
+
+function onCellClick(x, y) {
+  if (useAI && currentTurn === 'black') return; // Desativa jogadas manuais da IA
+
+  const piece = game[y][x];
+  if (selected) {
+    const move = possibleMoves.find(m => m.x === x && m.y === y);
+    if (move) makeMove(selected.x, selected.y, move);
+    selected = null;
+    possibleMoves = [];
+  } else if (piece && piece.color === currentTurn) {
+    const mustCapture = hasAnyCapture(currentTurn);
+    selected = { x, y };
+    possibleMoves = getValidMoves(x, y);
+    if (mustCapture) {
+      // Força apenas movimentos de captura quando houver capturas disponíveis no turno
+      possibleMoves = possibleMoves.filter(m => m.capture);
+      // Se a peça selecionada não tiver captura, cancela a seleção
+      if (possibleMoves.length === 0) {
+        selected = null;
+      }
+    }
+  }
+  renderBoard();
+}
+
+function getValidMoves(x, y) {
+  const piece = game[y][x];
+  let moves = [];
+  if (!piece) return moves;
+
+  // Dama (king) com movimento alongado: desliza por qualquer número de casas diagonais
+  // e captura a distância, podendo pousar em qualquer casa vazia após a peça capturada.
+  if (piece.king) {
+    const dirs = [[1,1],[1,-1],[-1,1],[-1,-1]];
+    for (const [dx, dy] of dirs) {
+      let nx = x + dx;
+      let ny = y + dy;
+
+      // Movimentos sem captura: deslizar enquanto houver casas vazias
+      while (inBounds(nx, ny) && !game[ny][nx]) {
+        moves.push({ x: nx, y: ny });
+        nx += dx;
+        ny += dy;
+      }
+
+      // Captura a distância: exatamente uma peça adversária seguida por casas vazias de pouso
+      if (inBounds(nx, ny) && game[ny][nx] && game[ny][nx].color !== piece.color) {
+        let cx = nx + dx;
+        let cy = ny + dy;
+        while (inBounds(cx, cy) && !game[cy][cx]) {
+          moves.push({ x: cx, y: cy, capture: { x: nx, y: ny } });
+          cx += dx;
+          cy += dy;
+        }
+      }
+    }
+    return moves;
+  }
+
+  // Peça normal (não-dama): permanece como antes (uma casa e captura de duas casas)
+  const dirs = piece.color === 'red' ? [[-1, -1], [1, -1]] : [[-1, 1], [1, 1]];
+  for (const [dx, dy] of dirs) {
+    const nx = x + dx, ny = y + dy;
+    if (inBounds(nx, ny) && !game[ny][nx]) moves.push({ x: nx, y: ny });
+
+    const cx = x + dx * 2, cy = y + dy * 2;
+    if (inBounds(cx, cy) && !game[cy][cx] && game[ny][nx] && game[ny][nx].color !== piece.color) {
+      moves.push({ x: cx, y: cy, capture: { x: nx, y: ny } });
+    }
+  }
+
+  return moves;
+}
+
+function makeMove(x1, y1, move) {
+  const piece = game[y1][x1];
+  game[y1][x1] = null;
+  game[move.y][move.x] = piece;
+  if (move.capture) {
+    game[move.capture.y][move.capture.x] = null;
+    if (piece.color === 'red') blackCount--; else redCount--;
+    updateScore();
+  }
+  if ((piece.color === 'red' && move.y === 0) || (piece.color === 'black' && move.y === 7))
+    piece.king = true;
+
+  selected = {x:move.x, y:move.y};
+  const nextMoves = getValidMoves(move.x, move.y).filter(m => m.capture);
+  if (move.capture && nextMoves.length > 0) {
+    // Se for IA, continuar automaticamente a sequência de capturas
+    if (useAI && currentTurn === 'black') {
+      const next = chooseAICapture(move.x, move.y, nextMoves);
+      makeMove(move.x, move.y, next);
+      return;
+    } else {
+      possibleMoves = nextMoves;
+      renderBoard();
+      return;
+    }
+  }
+
+  currentTurn = currentTurn === 'red' ? 'black' : 'red';
+  selected = null;
+  possibleMoves = [];
+  renderBoard();
+  updateTurn();
+  checkWin();
+
+  if (useAI && currentTurn === 'black') setTimeout(aiMove, 500);
+}
+
+function aiMove() {
+  if (aiLevel === 'facil') return aiMoveEasy();
+  if (aiLevel === 'medio') return aiMoveMedium();
+  return aiMoveHard();
+}
+
+function aiMoveEasy() {
+  let moves = [];
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      if (game[y][x] && game[y][x].color === 'black') {
+        const m = getValidMoves(x, y);
+        for (let move of m) moves.push({x,y,move});
+      }
+    }
+  }
+  if (moves.length === 0) return;
+  const idx = Math.floor(Math.random() * moves.length);
+  const chosen = moves[idx];
+  makeMove(chosen.x, chosen.y, chosen.move);
+}
+
+function aiMoveMedium() {
+  let moves = [];
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      if (game[y][x] && game[y][x].color === 'black') {
+        const m = getValidMoves(x, y);
+        for (let move of m) moves.push({x,y,move});
+      }
+    }
+  }
+  if (moves.length === 0) return;
+  const captureMoves = moves.filter(m => m.move.capture);
+  if (captureMoves.length > 0) {
+    let best = captureMoves[0];
+    let bestChain = 0;
+    for (const mv of captureMoves) {
+      const state = cloneGame(game);
+      applyMoveOn(state, mv.x, mv.y, mv.move);
+      const nextMoves = getValidMovesOn(state, mv.move.x, mv.move.y).filter(mm => mm.capture);
+      if (nextMoves.length > bestChain) { bestChain = nextMoves.length; best = mv; }
+    }
+    makeMove(best.x, best.y, best.move);
+    return;
+  }
+  moves.sort((a, b) => b.move.y - a.move.y);
+  makeMove(moves[0].x, moves[0].y, moves[0].move);
+}
+
+function aiMoveHard() {
+  const depth = computeHardDepth();
+  const state = cloneGame(game);
+  const result = minimax(state, depth, -Infinity, Infinity, true); // pretas maximizam
+  if (!result || !result.best) return;
+  makeMove(result.best.x, result.best.y, result.best.move);
+}
+
+function computeHardDepth() {
+  let pieces = 0;
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      if (game[y][x]) pieces++;
+    }
+  }
+  if (pieces <= 10) return 5;
+  if (pieces <= 16) return 4;
+  return 3;
+}
+
+function minimax(state, depth, alpha, beta, maximizingPlayer) {
+  const color = maximizingPlayer ? 'black' : 'red';
+  const legalMoves = getLegalMovesFor(state, color);
+
+  if (depth === 0 || legalMoves.length === 0) {
+    if (legalMoves.length === 0) {
+      // Sem movimentos: derrota do lado atual
+      return { score: maximizingPlayer ? -9999 : 9999 };
+    }
+    return { score: evaluateBoard(state) };
+  }
+
+  let best = null;
+  if (maximizingPlayer) {
+    let maxEval = -Infinity;
+    for (const mv of orderMoves(legalMoves)) {
+      const s = cloneGame(state);
+      // Aplicar o movimento e continuar capturas em cadeia do mesmo turno
+      applyMoveOn(s, mv.x, mv.y, mv.move);
+      if (mv.move.capture) {
+        let lastX = mv.move.x, lastY = mv.move.y;
+        let cont = getValidMovesOn(s, lastX, lastY).filter(m => m.capture);
+        while (cont.length > 0) {
+          const next = cont[0];
+          applyMoveOn(s, lastX, lastY, next);
+          lastX = next.x; lastY = next.y;
+          cont = getValidMovesOn(s, lastX, lastY).filter(m => m.capture);
+        }
+      }
+      const res = minimax(s, depth - 1, alpha, beta, false);
+      if (res.score > maxEval) { maxEval = res.score; best = mv; }
+      alpha = Math.max(alpha, maxEval);
+      if (beta <= alpha) break;
+    }
+    return { score: maxEval, best };
+  } else {
+    let minEval = Infinity;
+    for (const mv of orderMoves(legalMoves)) {
+      const s = cloneGame(state);
+      applyMoveOn(s, mv.x, mv.y, mv.move);
+      if (mv.move.capture) {
+        let lastX = mv.move.x, lastY = mv.move.y;
+        let cont = getValidMovesOn(s, lastX, lastY).filter(m => m.capture);
+        while (cont.length > 0) {
+          const next = cont[0];
+          applyMoveOn(s, lastX, lastY, next);
+          lastX = next.x; lastY = next.y;
+          cont = getValidMovesOn(s, lastX, lastY).filter(m => m.capture);
+        }
+      }
+      const res = minimax(s, depth - 1, alpha, beta, true);
+      if (res.score < minEval) { minEval = res.score; best = mv; }
+      beta = Math.min(beta, minEval);
+      if (beta <= alpha) break;
+    }
+    return { score: minEval, best };
+  }
+}
+
+function orderMoves(moves) {
+  // Capturas primeiro, depois demais; simples ordering ajuda na poda
+  return moves.slice().sort((a, b) => (b.move.capture ? 1 : 0) - (a.move.capture ? 1 : 0));
+}
+
+function getAllMovesFor(state, color) {
+  let moves = [];
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const p = state[y][x];
+      if (p && p.color === color) {
+        const ms = getValidMovesOn(state, x, y);
+        for (const m of ms) moves.push({ x, y, move: m });
+      }
+    }
+  }
+  return moves;
+}
+
+function getLegalMovesFor(state, color) {
+  const all = getAllMovesFor(state, color);
+  const caps = all.filter(m => m.move.capture);
+  return caps.length ? caps : all;
+}
+
+function chooseAICapture(fromX, fromY, options) {
+  if (aiLevel === 'facil') {
+    return options[Math.floor(Math.random() * options.length)];
+  } else if (aiLevel === 'medio') {
+    let best = options[0];
+    let bestChain = 0;
+    for (const opt of options) {
+      const state = cloneGame(game);
+      applyMoveOn(state, fromX, fromY, opt);
+      const further = getValidMovesOn(state, opt.x, opt.y).filter(m => m.capture);
+      if (further.length > bestChain) { bestChain = further.length; best = opt; }
+    }
+    return best;
+  } else { // dificil
+    let best = options[0];
+    let bestScore = -Infinity;
+    for (const opt of options) {
+      const state = cloneGame(game);
+      applyMoveOn(state, fromX, fromY, opt);
+      const score = evaluateBoard(state);
+      if (score > bestScore) { bestScore = score; best = opt; }
+    }
+    return best;
+  }
+}
+
+function cloneGame(state) {
+  const copy = [];
+  for (let y = 0; y < 8; y++) {
+    copy[y] = [];
+    for (let x = 0; x < 8; x++) {
+      const p = state[y][x];
+      copy[y][x] = p ? { color: p.color, king: p.king } : null;
+    }
+  }
+  return copy;
+}
+
+function applyMoveOn(state, x1, y1, move) {
+  const piece = state[y1][x1];
+  state[y1][x1] = null;
+  state[move.y][move.x] = piece;
+  if (move.capture) {
+    state[move.capture.y][move.capture.x] = null;
+  }
+  if ((piece.color === 'red' && move.y === 0) || (piece.color === 'black' && move.y === 7)) {
+    piece.king = true;
+  }
+}
+
+function evaluateBoard(state) {
+  let blackMen = 0, blackKings = 0, redMen = 0, redKings = 0;
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const p = state[y][x];
+      if (!p) continue;
+      if (p.color === 'black') { if (p.king) blackKings++; else blackMen++; }
+      else { if (p.king) redKings++; else redMen++; }
+    }
+  }
+  const mobilityBlack = countMovesFor(state, 'black');
+  const mobilityRed = countMovesFor(state, 'red');
+  return (blackMen + 2 * blackKings) - (redMen + 2 * redKings) + 0.1 * (mobilityBlack - mobilityRed);
+}
+
+function countMovesFor(state, color) {
+  let count = 0;
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const p = state[y][x];
+      if (p && p.color === color) {
+        const m = getValidMovesOn(state, x, y);
+        count += m.length;
+      }
+    }
+  }
+  return count;
+}
+
+function getValidMovesOn(state, x, y) {
+  const piece = state[y][x];
+  let moves = [];
+  if (!piece) return moves;
+  if (piece.king) {
+    const dirs = [[1,1],[1,-1],[-1,1],[-1,-1]];
+    for (const [dx, dy] of dirs) {
+      let nx = x + dx;
+      let ny = y + dy;
+      while (inBounds(nx, ny) && !state[ny][nx]) {
+        moves.push({ x: nx, y: ny });
+        nx += dx; ny += dy;
+      }
+      if (inBounds(nx, ny) && state[ny][nx] && state[ny][nx].color !== piece.color) {
+        let cx = nx + dx; let cy = ny + dy;
+        while (inBounds(cx, cy) && !state[cy][cx]) {
+          moves.push({ x: cx, y: cy, capture: { x: nx, y: ny } });
+          cx += dx; cy += dy;
+        }
+      }
+    }
+    return moves;
+  }
+  const dirs = piece.color === 'red' ? [[-1, -1], [1, -1]] : [[-1, 1], [1, 1]];
+  for (const [dx, dy] of dirs) {
+    const nx = x + dx, ny = y + dy;
+    if (inBounds(nx, ny) && !state[ny][nx]) moves.push({ x: nx, y: ny });
+    const cx = x + dx * 2, cy = y + dy * 2;
+    if (inBounds(cx, cy) && !state[cy][cx] && state[ny][nx] && state[ny][nx].color !== piece.color) {
+      moves.push({ x: cx, y: cy, capture: { x: nx, y: ny } });
+    }
+  }
+  return moves;
+}
+
+function inBounds(x, y) { return x >= 0 && x < 8 && y >= 0 && y < 8; }
+
+// Verificações de disponibilidade de captura e de movimentos
+function hasAnyCapture(color) {
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const piece = game[y][x];
+      if (piece && piece.color === color) {
+        const moves = getValidMoves(x, y);
+        if (moves.some(m => m.capture)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function hasAnyMoves(color) {
+  for (let y = 0; y < 8; y++) {
+    for (let x = 0; x < 8; x++) {
+      const piece = game[y][x];
+      if (piece && piece.color === color) {
+        const moves = getValidMoves(x, y);
+        if (moves.length > 0) return true;
+      }
+    }
+  }
+  return false;
+}
+
+function highlightMoves() {
+  for (const move of possibleMoves) {
+    const cell = board.children[move.y * 8 + move.x];
+    cell.classList.add('highlight');
+  }
+}
+
+function updateTurn() {
+  turnEl.textContent = currentTurn === 'red' ? 'Vermelho' : 'Preto';
+}
+
+function updateScore() {
+  redScoreEl.textContent = redCount;
+  blackScoreEl.textContent = blackCount;
+}
+
+function checkWin() {
+  if (blackCount === 0) { alert("🏆 Vermelho venceu!"); return; }
+  else if (redCount === 0) { alert("🏆 Preto venceu!"); return; }
+
+  // Vitória por bloqueio (sem movimentos disponíveis)
+  const redHasMoves = hasAnyMoves('red');
+  const blackHasMoves = hasAnyMoves('black');
+  if (!redHasMoves && blackHasMoves) { alert("🏆 Preto venceu! (sem movimentos)"); return; }
+  if (!blackHasMoves && redHasMoves) { alert("🏆 Vermelho venceu! (sem movimentos)"); return; }
+}
+
+function toggleAI() {
+  useAI = !useAI;
+  modeLabel.textContent = useAI ? "Jogador vs IA" : "PvP";
+  aiLevelSelect.style.display = useAI ? 'inline-block' : 'none';
+  resetGame();
+}
+
+function resetGame() {
+  redCount = 12;
+  blackCount = 12;
+  selected = null;
+  possibleMoves = [];
+  currentTurn = 'red';
+  initBoard();
+  updateScore();
+}
+
+initBoard();
+</script>
+</body>
+</html>
