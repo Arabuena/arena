@@ -191,19 +191,7 @@ document.getElementById('buyPro').onclick=()=>{
 
 document.getElementById('contact').onclick=()=>{
   window.location.href='mailto:contato@arabuenagomes.dev?subject=Arena%20Arabuen%C3%A3%20-%20Contato';
-};
-
-let currentGame='chess';
-function loadGame(game){
-  currentGame=game;
-  const src= game==='chess' ? 'xadrez.html' : 'dama com ia.html';
-  const iframe=ensureIframe(src);
-  const modeLabel=document.getElementById('modeLabel');
-  if(modeLabel){ modeLabel.textContent = game==='chess' ? 'IA / PvP' : 'IA'; }
-  document.getElementById('playArea').scrollIntoView({behavior:'smooth',block:'start'});
-  return iframe;
-}
-</script>
+};</script>
 </body>
 </html>
 
