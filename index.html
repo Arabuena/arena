@@ -53,7 +53,7 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#e6eef8;ba
 <main class="main">
   <section class="card play" id="playArea">
     <div style="display:flex;align-items:center;justify-content:space-between">
-      <div style="font-weight:700">Xadrez — PvP / PvC (IA inclusa)</div>
+      <div id="gameTitle" style="font-weight:700">Xadrez — PvP / PvC (IA inclusa)</div>
       <div style="color:var(--muted);font-size:13px">Modo: <span id="modeLabel">IA / PvP</span></div>
     </div>
 
@@ -122,12 +122,26 @@ function ensureIframe(src){
     iframe=document.createElement('iframe');
     iframe.style.width='100%';
     iframe.style.minHeight='640px';
+    iframe.style.overflow='hidden';
     iframe.style.border='none';
     iframe.setAttribute('loading','eager');
     container.appendChild(iframe);
   }
   if(src){ iframe.src=src; } else if(!iframe.src){ iframe.src='xadrez.html'; }
   return iframe;
+}
+
+// Redimensiona iframe para caber o conteúdo (mesmo domínio)
+function resizeIframeToContent(iframe){
+  try{
+    const doc = iframe.contentDocument || iframe.contentWindow.document;
+    if(!doc) return;
+    const body = doc.body, html = doc.documentElement;
+    const h = Math.max(body.scrollHeight, html.scrollHeight, body.offsetHeight, html.offsetHeight);
+    const minH = Math.max(640, h);
+    iframe.style.height = minH + 'px';
+    iframe.style.minHeight = minH + 'px';
+  }catch(e){ /* ignora erros de cross-origin */ }
 }
 
 document.getElementById('playNow').onclick=function(){
@@ -188,9 +202,25 @@ function loadGame(game){
   const iframe=ensureIframe(src);
   const modeLabel=document.getElementById('modeLabel');
   if(modeLabel){ modeLabel.textContent = game==='chess' ? 'IA / PvP' : (game==='dames' ? 'IA' : '—'); }
+  const titleEl=document.getElementById('gameTitle');
+  if(titleEl){
+    titleEl.textContent = game==='chess' ? 'Xadrez — PvP / PvC (IA inclusa)' :
+                         (game==='dames' ? 'Damas — PvP / PvC (IA inclusa)' : 'Jogo');
+  }
+  if(iframe){
+    iframe.addEventListener('load',()=>{
+      if(currentGame==='dames') resizeIframeToContent(iframe);
+    }, { once: true });
+  }
   document.getElementById('playArea').scrollIntoView({behavior:'smooth',block:'start'});
   return iframe;
 }
+
+// Atualiza ao redimensionar a janela (apenas Damas)
+window.addEventListener('resize',()=>{
+  const iframe=document.querySelector('#chessFrame iframe');
+  if(iframe && currentGame==='dames') resizeIframeToContent(iframe);
+});
 </script>
 <!-- Galeria de imagens dos jogos -->
 <section class="card" style="margin-top:12px">
