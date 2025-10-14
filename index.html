@@ -81,17 +81,12 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#e6eef8;ba
     <div class="card support" id="support">
       <div style="font-weight:700;margin-bottom:8px">Apoie o projeto</div>
       <div class="pix">
-        <div class="kv">PIX — Arabuenã Peçanha Gomes</div>
-        <div style="color:var(--muted);font-size:13px;margin-bottom:8px">Chave PIX (Telefone / CNPJ):</div>
-        <div style="font-size:16px;font-weight:700">(62) 98216-2844</div>
-        <div style="color:var(--muted);font-size:13px;margin:8px 0">Banco: C6 Bank</div>
+        <div class="kv">PIX</div>
+        <div style="color:var(--muted);font-size:13px;margin-bottom:8px">Clique para exibir o QR do PIX:</div>
         <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-          <div class="copy">
-            <button class="small" id="copyPix">Copiar PIX</button>
-            <button class="small" id="copyCNome">Copiar Nome</button>
-          </div>
+          <button class="small" id="showQr">Mostrar QR PIX</button>
         </div>
-        <div style="margin-top:10px;color:var(--muted);font-size:13px">Quer o QR code pronto? Posso gerar o QR (imagem) para você baixar — diga "Gerar QR".</div>
+        <img id="pixQr" src="assets/pix_qr_arabuena.png" alt="QR PIX" style="display:none;margin-top:10px;max-width:260px;border-radius:8px"/>
       </div>
     </div>
 
@@ -159,16 +154,15 @@ document.querySelectorAll('.game-pill').forEach(el=>{
   });
 });
 
-const PIX_KEY='(62) 98216-2844';
-const NOME='Arabuenã Peçanha Gomes';
-document.getElementById('copyPix').onclick=async()=>{
-  try{ await navigator.clipboard.writeText(PIX_KEY); alert('PIX copiado para a área de transferência'); }
-  catch(e){ prompt('PIX', PIX_KEY); }
-};
-document.getElementById('copyCNome').onclick=async()=>{
-  try{ await navigator.clipboard.writeText(NOME); alert('Nome copiado para a área de transferência'); }
-  catch(e){ prompt('Nome', NOME); }
-};
+// Exibir QR do PIX ao clicar no botão
+const showQrBtn=document.getElementById('showQr');
+const pixQrImg=document.getElementById('pixQr');
+if(showQrBtn && pixQrImg){
+  showQrBtn.onclick=()=>{
+    pixQrImg.style.display='block';
+    pixQrImg.scrollIntoView({behavior:'smooth',block:'center'});
+  };
+}
 
 // Botões removidos a pedido do usuário: Exportar PGN e Baixar App (PWA)
 
