@@ -28,6 +28,11 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#e6eef8;ba
 .copy{display:inline-flex;gap:8px;align-items:center}
 .footer{max-width:1100px;margin:18px auto;padding:12px 18px;color:var(--muted);font-size:13px;text-align:center}
 @media(max-width:940px){.main{grid-template-columns:1fr}.header{padding:12px}.play{min-height:420px}}
+.games-gallery{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-top:16px}
+.game-card{background:var(--glass2);border:1px solid rgba(255,255,255,0.06);border-radius:10px;overflow:hidden;cursor:pointer;transition:transform .15s ease, box-shadow .15s ease}
+.game-card:hover{transform:translateY(-2px);box-shadow:0 10px 30px rgba(2,6,23,0.6)}
+.game-card img{width:100%;height:100px;object-fit:cover;display:block}
+.game-card .label{padding:8px 10px;font-size:13px;color:#dbe7f3}
 </style>
 </head>
 <body>
@@ -55,7 +60,8 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#e6eef8;ba
     <div id="gameWrapper" style="flex:1;display:flex;align-items:center;justify-content:center;">
       <!-- Aqui o jogo será injetado (iframe ou bloco) -->
       <div id="chessFrame" style="width:100%;max-width:920px;">
-        <!-- O jogo de xadrez em HTML/JS será incorporado aqui. -->
+        <!-- Imagem de jogos exibida por padrão -->
+        <img id="gamesImage" src="assets/jogos.svg" alt="Imagem de jogos" style="width:100%;display:block;border:none;min-height:640px;border-radius:8px"/>
       </div>
     </div>
 
@@ -63,12 +69,10 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#e6eef8;ba
       <div class="games-list">
         <div class="game-pill" data-game="chess">Xadrez</div>
         <div class="game-pill" data-game="dames">Damas</div>
-        <div class="game-pill" data-game="tictactoe">Velha (em breve)</div>
-        <div class="game-pill" data-game="memory">Memória (em breve)</div>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="small" id="exportPGN">Exportar PGN</button>
-        <button class="small" id="downloadApp">Baixar App (PWA)</button>
+        <div class="game-pill" data-game="velha">Velha</div>
+        <div class="game-pill" data-game="memoria">Memória</div>
+        <div class="game-pill" data-game="forca">Forca</div>
+        <div class="game-pill" data-game="bird">Bird</div>
       </div>
     </div>
   </section>
@@ -116,6 +120,8 @@ body{margin:0;font-family:Inter,system-ui,Segoe UI,Roboto,Arial;color:#e6eef8;ba
 function ensureIframe(src){
   const container=document.getElementById('chessFrame');
   if(!container) return null;
+  const img=document.getElementById('gamesImage');
+  if(img) img.style.display='none';
   let iframe=container.querySelector('iframe');
   if(!iframe){
     iframe=document.createElement('iframe');
@@ -139,6 +145,14 @@ document.querySelectorAll('.game-pill').forEach(el=>{
       loadGame('chess');
     } else if (el.dataset.game==='dames'){
       loadGame('dames');
+    } else if (el.dataset.game==='velha'){
+      loadGame('velha');
+    } else if (el.dataset.game==='memoria'){
+      loadGame('memoria');
+    } else if (el.dataset.game==='forca'){
+      loadGame('forca');
+    } else if (el.dataset.game==='bird'){
+      loadGame('bird');
     } else {
       alert('Este jogo estará disponível em breve!');
     }
@@ -156,34 +170,7 @@ document.getElementById('copyCNome').onclick=async()=>{
   catch(e){ prompt('Nome', NOME); }
 };
 
-document.getElementById('exportPGN').onclick=async()=>{
-  if(currentGame!=='chess'){ alert('Exportar PGN está disponível apenas para Xadrez.'); return; }
-  const iframe=ensureIframe('xadrez.html');
-  if(!iframe){ alert('Abra o jogo de Xadrez primeiro.'); return; }
-  try{
-    const w=iframe.contentWindow;
-    if(w && typeof w.buildPGN==='function'){
-      const pgn=w.buildPGN();
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        await navigator.clipboard.writeText(pgn);
-        alert('PGN copiado para a área de transferência');
-      } else {
-        prompt('PGN', pgn);
-      }
-    } else {
-      alert('Faça alguns lances e tente novamente.');
-    }
-  }catch(e){
-    try{
-      const pgn=iframe.contentWindow && iframe.contentWindow.buildPGN ? iframe.contentWindow.buildPGN() : '';
-      if(pgn) prompt('PGN', pgn); else alert('Não foi possível exportar o PGN agora.');
-    }catch(_){ alert('Não foi possível acessar o jogo para exportar PGN.'); }
-  }
-};
-
-document.getElementById('downloadApp').onclick=()=>{
-  alert('A versão PWA estará disponível em breve.');
-};
+// Botões removidos a pedido do usuário: Exportar PGN e Baixar App (PWA)
 
 document.getElementById('buyPro').onclick=()=>{
   alert('Obrigado pelo interesse! A versão PRO ficará disponível em breve.');
@@ -191,17 +178,64 @@ document.getElementById('buyPro').onclick=()=>{
 
 document.getElementById('contact').onclick=()=>{
   window.location.href='mailto:contato@arabuenagomes.dev?subject=Arena%20Arabuen%C3%A3%20-%20Contato';
-};</script>
-</body>
-</html>
+};
 
 let currentGame='chess';
 function loadGame(game){
   currentGame=game;
-  const src= game==='chess' ? 'xadrez.html' : 'dama com ia.html';
+  let src;
+  if(game==='chess') src='xadrez.html';
+  else if(game==='dames') src='dama com ia.html';
+  else if(game==='velha') src='https://htmlpreview.github.io/?https://raw.githubusercontent.com/Arabuena/Pixalar/main/jogos/velha/index.html';
+  else if(game==='memoria') src='https://htmlpreview.github.io/?https://raw.githubusercontent.com/Arabuena/Pixalar/main/jogos/memoria/index.html';
+  else if(game==='forca') src='https://htmlpreview.github.io/?https://raw.githubusercontent.com/Arabuena/Pixalar/main/jogos/forca/index.html';
+  else if(game==='bird') src='https://htmlpreview.github.io/?https://raw.githubusercontent.com/Arabuena/Pixalar/main/jogos/bird/index.html';
+  else src='xadrez.html';
   const iframe=ensureIframe(src);
   const modeLabel=document.getElementById('modeLabel');
-  if(modeLabel){ modeLabel.textContent = game==='chess' ? 'IA / PvP' : 'IA'; }
+  if(modeLabel){ modeLabel.textContent = game==='chess' ? 'IA / PvP' : (game==='dames' ? 'IA' : '—'); }
   document.getElementById('playArea').scrollIntoView({behavior:'smooth',block:'start'});
   return iframe;
 }
+</script>
+<!-- Galeria de imagens dos jogos -->
+<section class="card" style="margin-top:12px">
+  <div style="font-weight:700;margin-bottom:8px">Explore os jogos</div>
+  <div class="games-gallery" id="gamesGallery">
+    <div class="game-card" data-game="chess">
+      <img src="assets/chess.svg" alt="Xadrez"/>
+      <div class="label">Xadrez</div>
+    </div>
+    <div class="game-card" data-game="dames">
+      <img src="assets/dames.svg" alt="Damas"/>
+      <div class="label">Damas</div>
+    </div>
+    <div class="game-card" data-game="velha">
+      <img src="assets/velha.svg" alt="Jogo da Velha"/>
+      <div class="label">Velha</div>
+    </div>
+    <div class="game-card" data-game="memoria">
+      <img src="assets/memoria.svg" alt="Jogo da Memória"/>
+      <div class="label">Memória</div>
+    </div>
+    <div class="game-card" data-game="forca">
+      <img src="assets/forca.svg" alt="Jogo da Forca"/>
+      <div class="label">Forca</div>
+    </div>
+    <div class="game-card" data-game="bird">
+      <img src="assets/bird.svg" alt="Jogo Bird"/>
+      <div class="label">Bird</div>
+    </div>
+  </div>
+</section>
+<script>
+document.querySelectorAll('.game-card').forEach(card=>{
+  card.addEventListener('click',()=>{
+    const g=card.dataset.game;
+    loadGame(g);
+    document.getElementById('playArea').scrollIntoView({behavior:'smooth',block:'start'});
+  });
+});
+</script>
+</body>
+</html>
