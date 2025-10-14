@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Damas - PvP e IA</title>
 <style>
- :root { --board-size: min(92vw, 80vh, 560px); --cell-size: calc(var(--board-size) / 8); }
+ :root { --board-size: clamp(280px, min(92vw, calc(100vh - 220px - env(safe-area-inset-bottom, 0px))), 560px); --cell-size: calc(var(--board-size) / 8); }
  body {
    background: #0f1724;
    color: white;
@@ -25,6 +25,7 @@
    height: var(--board-size);
    border: 4px solid white;
    margin-bottom: 10px;
+   touch-action: none;
  }
  .cell {
    width: var(--cell-size);
@@ -37,8 +38,8 @@
  .cell.light { background: #f0d9b5; }
  .cell.highlight { outline: 3px solid yellow; }
  .piece {
-   width: calc(var(--cell-size) - 20px);
-   height: calc(var(--cell-size) - 20px);
+   width: calc(var(--cell-size) - min(20px, calc(var(--cell-size) * 0.22)));
+   height: calc(var(--cell-size) - min(20px, calc(var(--cell-size) * 0.22)));
    border-radius: 50%;
    display: flex;
    align-items: center;
@@ -64,12 +65,16 @@
    margin-bottom: 10px;
  }
  @media (max-width: 640px) {
-   :root { --board-size: min(94vw, 72vh, 480px); }
-   body { min-height: auto; padding: 12px; }
+   :root { --board-size: clamp(240px, min(94vw, calc(100vh - 240px - env(safe-area-inset-bottom, 0px))), 480px); }
+   body { min-height: auto; padding: 12px; padding-bottom: env(safe-area-inset-bottom, 0px); }
    h1 { font-size: 1.4rem; }
    #board { border-width: 3px; }
    #controls { flex-wrap: wrap; }
    button, select { font-size: 0.95em; }
+ }
+ @media (max-width: 400px) {
+   #controls { flex-direction: column; width: 100%; }
+   #controls > * { width: 100%; }
  }
  </style>
 </head>
