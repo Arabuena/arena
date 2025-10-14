@@ -5,62 +5,73 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Damas - PvP e IA</title>
 <style>
-body {
-  background: #0f1724;
-  color: white;
-  font-family: Arial, sans-serif;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100vh;
-  margin: 0;
-}
-#board {
-  display: grid;
-  grid-template-columns: repeat(8, 70px);
-  grid-template-rows: repeat(8, 70px);
-  border: 4px solid white;
-  margin-bottom: 10px;
-}
-.cell {
-  width: 70px;
-  height: 70px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-.cell.dark { background: #b58863; }
-.cell.light { background: #f0d9b5; }
-.cell.highlight { outline: 3px solid yellow; }
-.piece {
-  width: 50px;
-  height: 50px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: pointer;
-}
-.piece.red { background: #b22222; }
-.piece.black { background: black; }
-.piece.king { border: 3px solid gold; }
-.selected { outline: 3px solid cyan; }
-#info { margin-bottom: 10px; font-size: 1.2em; }
-#controls {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-button {
-  padding: 6px 12px;
-  font-size: 1em;
-  cursor: pointer;
-}
-#score {
-  margin-bottom: 10px;
-}
-</style>
+ :root { --board-size: min(92vw, 80vh, 560px); --cell-size: calc(var(--board-size) / 8); }
+ body {
+   background: #0f1724;
+   color: white;
+   font-family: Arial, sans-serif;
+   display: flex;
+   flex-direction: column;
+   align-items: center;
+   justify-content: center;
+   min-height: 100vh;
+   margin: 0;
+ }
+ #board {
+   display: grid;
+   grid-template-columns: repeat(8, var(--cell-size));
+   grid-template-rows: repeat(8, var(--cell-size));
+   width: var(--board-size);
+   height: var(--board-size);
+   border: 4px solid white;
+   margin-bottom: 10px;
+ }
+ .cell {
+   width: var(--cell-size);
+   height: var(--cell-size);
+   display: flex;
+   align-items: center;
+   justify-content: center;
+ }
+ .cell.dark { background: #b58863; }
+ .cell.light { background: #f0d9b5; }
+ .cell.highlight { outline: 3px solid yellow; }
+ .piece {
+   width: calc(var(--cell-size) - 20px);
+   height: calc(var(--cell-size) - 20px);
+   border-radius: 50%;
+   display: flex;
+   align-items: center;
+   justify-content: center;
+   cursor: pointer;
+ }
+ .piece.red { background: #b22222; }
+ .piece.black { background: black; }
+ .piece.king { border: 3px solid gold; }
+ .selected { outline: 3px solid cyan; }
+ #info { margin-bottom: 10px; font-size: 1.2em; }
+ #controls {
+   display: flex;
+   gap: 10px;
+   margin-bottom: 10px;
+ }
+ button {
+   padding: 6px 12px;
+   font-size: 1em;
+   cursor: pointer;
+ }
+ #score {
+   margin-bottom: 10px;
+ }
+ @media (max-width: 640px) {
+   :root { --board-size: min(94vw, 72vh, 480px); }
+   body { min-height: auto; padding: 12px; }
+   h1 { font-size: 1.4rem; }
+   #board { border-width: 3px; }
+   #controls { flex-wrap: wrap; }
+   button, select { font-size: 0.95em; }
+ }
+ </style>
 </head>
 <body>
 
@@ -604,3 +615,14 @@ initBoard();
 </script>
 </body>
 </html>
+
+<style>
+:root { --cell-size: min(11vw, 70px); }
+</style>
+
+@media (max-width: 640px) {
+  body { height: auto; padding: 12px; }
+  h1 { font-size: 1.4rem; }
+  #board { border-width: 3px; }
+  #controls { flex-wrap: wrap; }
+}
