@@ -66,6 +66,7 @@ const volEl=document.getElementById('vol'); let currentVol=1.0; if(volEl){ curre
 
 // Orientação do tabuleiro (true = brancas em baixo)
 let whiteBottom=true;
+let lastAISrc=null;
 // Adiciona botão de girar na UI
 const uiEl=document.getElementById('ui');
 if(uiEl&&!document.getElementById('flip')){const flipBtn=document.createElement('button');flipBtn.id='flip';flipBtn.textContent='Girar';flipBtn.onclick=()=>{whiteBottom=!whiteBottom;render()};uiEl.appendChild(flipBtn)}
@@ -97,6 +98,25 @@ function syncDrawButtons(){
 let timeMode = 'blitz'; let tW=300, tB=300; let timer=null; let lastTick=null;
 // en passant (quadrado alvo disponível por um turno)
 let enp=null; // {x,y,forColor}
+// Aprendizado simples do Tal: helpers e log
+let talMoveLog=[]; // [{fen, uci, color}] somente lances do Tal nas aberturas
+// Debug de IA Tal
+window.talDebug = false; // ative com: window.talDebug = true
+function logTal(msg, data){ try{ if(window.talDebug) console.debug('[Tal]', msg, data||''); }catch(_){ /* silencioso */ } }
+function sq(x,y){ return 'abcdefgh'[x] + (y+1); }
+function loadTalLearn(){ try{ const raw=localStorage.getItem('talLearn'); return raw? JSON.parse(raw) : { book: {}, perf: {} }; }catch(_){ return { book: {}, perf: {} }; } }
+function saveTalLearn(d){ try{ localStorage.setItem('talLearn', JSON.stringify(d)); }catch(_){} }
+function pieceToFENChar(p){ if(!p) return null; const ch=p.t; return p.c==='white'? ch : ch.toLowerCase(); }
+function toFEN(s, side){
+  const ranks=[];
+  for(let y=7;y>=0;y--){ let run=0, rank=''; for(let x=0;x<8;x++){ const ch=pieceToFENChar(s[y][x]); if(!ch){ run++; } else { if(run>0){ rank+=String(run); run=0; } rank+=ch; } } if(run>0) rank+=String(run); ranks.push(rank); }
+  const board=ranks.join('/');
+  const active = side==='black' ? 'b' : 'w';
+  const castle = getCastleRights(s);
+  const ep = enp ? String.fromCharCode(97 + enp.x) + String(enp.y + 1) : '-';
+  return `${board} ${active} ${castle} ${ep} 0 1`;
+}
+function uciFromMove(x,y,m){ const fx=String.fromCharCode(97+x); const fy=String(y+1); const tx=String.fromCharCode(97+m.x); const ty=String(m.y+1); const promo=m.promote? String(m.promote).toLowerCase() : ''; return fx+fy+tx+ty+promo; }
 // Regras de empate: relógio de 50 lances e repetição de posição
 let halfmoveClock=0; // conta meias-jogadas desde última captura ou movimento de peão
 let posCounts={}; // mapa de posições para tripla repetição
@@ -358,29 +378,86 @@ function createPromoUI(){ if(document.getElementById('promo')) return; const d=d
 function showPromo(onPick){ createPromoUI(); const d=document.getElementById('promo'); d.style.display='block'; ['Q','R','B','N'].forEach(t=>{ const btn=d.querySelector('button[data-p="'+t+'"]'); if(btn) btn.onclick=()=>{ d.style.display='none'; onPick(t); }; }); }
 
 function execMove(x,y,m){
-  const p=g[y][x];
-  const capture=!!m.cap;
-  const s0=clone(g); // estado antes do movimento para SAN
-  const san = toSAN(s0,x,y,m);
+  if(typeof x!=='number' || typeof y!=='number' || !inB(x,y)) { console.warn('Ignorando movimento: origem fora dos limites em execMove', {x,y,m}); return; }
+  if(!m || typeof m.x!=='number' || typeof m.y!=='number' || !inB(m.x,m.y)) { console.warn('Ignorando movimento: destino fora dos limites em execMove', {x,y,m}); return; }
+  const p = g[y] && g[y][x];
+  if(!p){ 
+    console.warn('Ignorando movimento: origem vazia em execMove', {x,y,m}); 
+    return; 
+  }
+
+  const capture = !!m.cap;
+  const s0 = clone(g); // estado antes do movimento para SAN
+  const san = toSAN(s0, x, y, m);
+
   // en passant anterior expira
-  enp=null;
-  apply(g,x,y,m);
-  // registrar SAN
-  if(p && p.c==='white'){ moveHistory.push({num:fullmoveNumber,w:san}); }
-  else { if(moveHistory.length===0) moveHistory.push({num:fullmoveNumber,w:'...'}); moveHistory[moveHistory.length-1].b=san; fullmoveNumber++; }
+  enp = null;
+
+  // aplica no tabuleiro
+  apply(g, x, y, m);
+
+  // registrar SAN + origem da IA (se aplicável), baseado na cor do movedor antes do apply
+  const moverColor = p.c;
+  const isAITurn = (mode==='ava') || (mode==='ai' && moverColor==='black');
+  const srcTag = isAITurn ? lastAISrc : null;
+  // log para livro pessoal do Tal (apenas primeiros lances)
+  try{
+    if(isAITurn && levelFor(moverColor)==='tal'){
+      const fen=toFEN(s0, moverColor);
+      const uci=uciFromMove(x,y,m);
+      // Aprender também em finais: registra sempre quando poucas peças
+      let pcs=0; for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++) if(s0[yy][xx]) pcs++;
+      if(talMoveLog.length<16 || pcs<=10){ talMoveLog.push({ fen, uci, color: moverColor }); }
+    }
+  }catch(_){ /* silencioso */ }
+
+  if(moverColor==='white'){
+    moveHistory.push({num:fullmoveNumber, w: san, wsrc: srcTag});
+  } else {
+    if(moveHistory.length===0) moveHistory.push({num:fullmoveNumber, w: '...'});
+    moveHistory[moveHistory.length-1].b = san;
+    moveHistory[moveHistory.length-1].bsrc = srcTag;
+    fullmoveNumber++;
+  }
+
+  // limpa origem após registrar
+  lastAISrc = null;
+
   renderMoves();
   // cancelar oferta de empate pendente ao realizar um lance
   drawOffer=null; syncDrawButtons();
   // atualiza relógio de 50 lances
   if(capture || (p && p.t==='P')) halfmoveClock=0; else halfmoveClock++;
   // se peão avançou duas casas, habilita en passant para o oponente
-  if(p && p.t==='P' && Math.abs(m.y - y)===2){ const dir=p.c==='white'?1:-1; const opp = (turn==='white'?'black':'white'); enp={x:x,y:y+dir,forColor:opp}; }
-  sel=null; opts=[]; turn=turn==='white'?'black':'white'; render(); updTurn(); updateStatus(); playSound(capture?'cap':'move'); if(gameResult==='*'){ startClock(); switchClock(); }
-  if(gameResult==='*' && ((mode==='ai'&&turn==='black') || mode==='ava')) setTimeout(()=>{
-    // IA: aceitar/recusar oferta de empate
-    if(drawOffer){ const s=clone(g); const sc=evalS(s); if(sc<=-50){ playSound('draw'); endGame('Empate aceito'); drawOffer=null; return; } else { drawOffer=null; updateStatus(); syncDrawButtons(); } }
-    if(gameResult==='*'){ runAI(); updateStatus(); }
-  }, thinkDelay());
+  if(p && p.t==='P' && Math.abs(m.y - y)===2){
+    const dir = p.c==='white' ? 1 : -1;
+    const opp = (turn==='white' ? 'black' : 'white');
+    enp = { x: x, y: y + dir, forColor: opp };
+  }
+
+  sel=null; opts=[];
+  turn = turn==='white' ? 'black' : 'white';
+  // registra a posição atual para repetição e checa empate imediato
+  try{ recordPosition(); }catch(_){}
+  try{
+    const drawMsg = checkDrawConditions();
+    if(drawMsg){ playSound('draw'); endGame(drawMsg); return; }
+  }catch(_){}
+  render(); updTurn(); updateStatus(); playSound(capture?'cap':'move');
+
+  if(gameResult==='*'){ startClock(); switchClock(); }
+  if(gameResult==='*' && ((mode==='ai' && turn==='black') || mode==='ava')){
+    setTimeout(()=>{
+      // IA: aceitar/recusar oferta de empate
+      if(drawOffer){
+        const s=clone(g);
+        const sc=evalS(s);
+        if(sc<=-50){ playSound('draw'); endGame('Empate aceito'); drawOffer=null; return; }
+        else { drawOffer=null; updateStatus(); syncDrawButtons(); }
+      }
+      if(gameResult==='*'){ runAI(); updateStatus(); }
+    }, thinkDelay());
+  }
 }
 
 function doMove(x,y,m){
@@ -407,6 +484,9 @@ function runAI(){
         if(turn!==beforeTurn) return;
         if(gameResult && gameResult!=='*') return;
         const d=ev.data||{};
+        if(d.src){ console.info('Tal origem:', d.src); }
+        // guarda origem do lance para UI
+        lastAISrc = d.src || null;
         if(typeof d.x==='number' && typeof d.y==='number' && d.m){
           // Validar jogada enviada pelo worker contra o estado atual
           const inBounds = (d.x>=0 && d.x<8 && d.y>=0 && d.y<8);
@@ -414,24 +494,63 @@ function runAI(){
           if(piece && piece.c===beforeTurn){
             try{
               const legals = legalOn(g, d.x, d.y) || [];
-              const isLegal = legals.some(mm=> mm.x===d.m.x && mm.y===d.m.y && (!!mm.castle === !!d.m.castle) && (!!mm.ep === !!d.m.ep));
-              if(isLegal){ doMove(d.x,d.y,d.m); }
-              else { try{ aiEasy(beforeTurn); }catch(__){} }
-            }catch(_){ try{ aiEasy(beforeTurn); }catch(__){} }
+              // encontre o objeto de movimento interno (mm) correspondente
+              const matched = legals.find(mm =>
+                mm.x===d.m.x && mm.y===d.m.y &&
+                (!!mm.castle === !!d.m.castle) && (!!mm.ep === !!d.m.ep)
+              );
+              if(matched){
+                // propagar promoção se o worker forneceu
+                if(d.m && d.m.promote){ matched.promote = d.m.promote; }
+                doMove(d.x, d.y, matched);
+              } else { 
+                // jogada inválida: limpar origem e fallback
+                lastAISrc = null;
+                try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(__){} 
+              }
+            }catch(_){ 
+              lastAISrc = null; // limpa origem se erro
+              try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(__){} 
+            }
           } else {
-            try{ aiEasy(beforeTurn); }catch(_){ /* fallback silencioso */ }
+            lastAISrc = null; // limpa origem se peça inválida
+            try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(_){ /* fallback silencioso */ }
           }
         } else {
-          try{ aiEasy(beforeTurn); }catch(_){}
+          lastAISrc = null; // limpa origem se dados inválidos
+          try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(_){}
         }
         updateStatus();
       };
       aiWorker.addEventListener('message', onMsg);
       try{
-        const payload={ g: JSON.parse(JSON.stringify(g)), color: beforeTurn, level: lvl, enp: enp };
+        const learn = loadTalLearn();
+        // Semente de livro pessoal para KRRK (duas torres vs rei)
+        function seedTalBook(book){
+          try{
+            const seeds={
+              '4k3/8/8/8/8/8/8/R3K2R w KQ - 0 1': { 'e1e7': 8, 'h1h7': 8, 'a1a7': 8 },
+              '4k3/8/8/8/8/4R3/8/4RK2 w - - 0 1': { 'f1f6': 8, 'e2e6': 8 },
+              '4k3/8/8/8/8/8/4R3/4RK2 w - - 0 1': { 'e1e6': 8, 'f1f6': 8 }
+            };
+            for(const fen in seeds){ if(!book[fen]) book[fen]={}; const moves=seeds[fen]; for(const uci in moves){ book[fen][uci]=(book[fen][uci]||0)+moves[uci]; } }
+          }catch(_){ /* silencioso */ }
+        }
+        seedTalBook(learn.book||(learn.book={})); saveTalLearn(learn);
+        const fenNow = toFEN(g, beforeTurn);
+        const personal = (learn && learn.book && learn.book[fenNow]) ? learn.book[fenNow] : null;
+        const payload={ g: JSON.parse(JSON.stringify(g)), color: beforeTurn, level: lvl, enp: enp, budgetMs: Math.max(600, thinkDelay()), learnBook: personal };
         aiWorker.postMessage(payload);
       }catch(_){ /* fallback abaixo */ }
-      setTimeout(()=>{ if(!resolved && turn===beforeTurn && (gameResult==='*')){ try{ aiEasy(beforeTurn); }catch(_){} updateStatus(); } }, Math.max(900, thinkDelay()+400));
+      setTimeout(()=>{ 
+        if(!resolved && turn===beforeTurn && (gameResult==='*')){ 
+          try{ 
+            const lvlTimeout = levelFor(beforeTurn);
+            if(lvlTimeout==='tal') aiMed(beforeTurn); else aiEasy(beforeTurn); 
+          }catch(_){} 
+          updateStatus(); 
+        } 
+      }, Math.max(900, thinkDelay()+400));
     } else {
       ai(beforeTurn);
       setTimeout(()=>{ if(turn===beforeTurn) { try{ aiEasy(beforeTurn); }catch(_){} } }, 1200);
@@ -445,7 +564,7 @@ function thinkDelay(){
     const lvl = levelFor(turn);
     let base=(lvl==='facil')?200:(lvl==='medio')?600:(lvl==='dificil')?1200:1600;
     if(timeMode==='classica') base+=600; else if(timeMode==='rapida') base+=300; else if(timeMode==='blitz') base+=150; else if(timeMode==='bullet') base+=80;
-    if(lvl==='tal'){ base += 200 * (typeof compDepthTal==='function' ? compDepthTal() : 4); }
+    if(lvl==='tal'){ base += 300 * (typeof compDepthTal==='function' ? compDepthTal() : 4); }
     const jitter=Math.floor(Math.random()*200)-100;
     return Math.max(50, base + jitter);
   }catch(e){ return 250; }
@@ -513,12 +632,58 @@ function evalAgg(s){
     if(p.t==='P'){
       if(p.c==='black') score += (6 - y) * 5; else score -= (y - 1) * 5;
     }
+    // penalização por peças penduradas (atacadas e mal defendidas)
+    const opp = p.c==='black' ? 'white' : 'black';
+    let def=0, att=0, minAtt=Infinity;
+    for(let yy=0; yy<8; yy++) for(let xx=0; xx<8; xx++){
+      const q=s[yy][xx]; if(!q) continue;
+      const ps=pseudoOn(s,xx,yy);
+      for(const m of ps){
+        if(m.x===x && m.y===y){
+          if(q.c===opp){ att++; const v=val[q.t]||0; if(v<minAtt) minAtt=v; }
+          else def++;
+          break;
+        }
+      }
+    }
+    if(att>0 && def===0){
+      const penalty=(val[p.t]||0)*0.6;
+      score += (p.c==='black' ? -penalty : +penalty);
+    } else if(att>0 && def>0){
+      const myVal=val[p.t]||0;
+      if(minAtt <= myVal){
+        const penalty = (myVal - minAtt)*0.4 + 40;
+        score += (p.c==='black' ? -penalty : +penalty);
+      }
+    }
   }
   // segurança do rei: bônus por colocar o rei adversário em xeque
   const inCheckWhite = isCheck(s,'white');
   const inCheckBlack = isCheck(s,'black');
   if(inCheckWhite) score += 50;
   if(inCheckBlack) score -= 50;
+  // bônus de rede de mate: reduzir casas seguras do rei adversário
+  function kingPos(side){
+    for(let y=0;y<8;y++) for(let x=0;x<8;x++){ const p=s[y][x]; if(p&&p.c===side&&p.t==='K') return {x,y}; }
+    return null;
+  }
+  const wK=kingPos('white');
+  const bK=kingPos('black');
+  function safeSquaresAround(kx,ky, defenderSide){
+    let safe=0;
+    const dirs=[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+    for(const [dx,dy] of dirs){
+      const nx=kx+dx, ny=ky+dy;
+      if(nx<0||nx>7||ny<0||ny>7) continue;
+      const occ=s[ny][nx];
+      if(occ && occ.c===defenderSide) continue; // casa ocupada pelo próprio lado do rei
+      // casa segura se NÃO for atacada pelo lado oposto
+      if(!attacked(s, defenderSide, nx, ny)) safe++;
+    }
+    return safe;
+  }
+  if(wK){ const safeW = safeSquaresAround(wK.x, wK.y, 'white'); score += (8 - safeW) * 6; let pcs=0; for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++) if(s[yy][xx]) pcs++; if(window.talDebug && pcs<=10) logTal('Rede de mate (white king safe squares)', { safeW, pcs }); }
+  if(bK){ const safeB = safeSquaresAround(bK.x, bK.y, 'black'); score -= (8 - safeB) * 6; let pcs=0; for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++) if(s[yy][xx]) pcs++; if(window.talDebug && pcs<=10) logTal('Rede de mate (black king safe squares)', { safeB, pcs }); }
   // mobilidade reforçada
   score += 0.2 * (mobB - mobW);
   return score;
@@ -530,8 +695,10 @@ function minimaxTal(s, d, a, b, max){
   // nó terminal ou profundidade 0: quiescence search para evitar efeito horizonte
   if(d===0 || ms.length===0){
     if(ms.length===0){
-      // cheque-mate ou afogamento: avaliar severamente
-      return { score: max ? -99999 : 99999 };
+      // distingue xeque-mate de afogamento (stalemate)
+      const losing = isCheck(s, color);
+      const score = losing ? (max ? -99999 : 99999) : 0;
+      return { score };
     }
     const qs = qSearch(s, a, b, max);
     return { score: qs };
@@ -545,6 +712,22 @@ function minimaxTal(s, d, a, b, max){
       // extensão por cheque
       const opp = 'white';
       const ext = isCheck(c, opp) ? 1 : 0;
+      // bloquear sacrifícios com peças pesadas que não dão cheque
+      const mover = s[mv.y][mv.x];
+      const isCap = !!mv.m.cap;
+      const isChk = ext>0;
+      function isSacrificeMoveLocal(){
+        if(!mover) return false;
+        if(!(mover.t==='Q'||mover.t==='R'||mover.t==='B')) return false;
+        const val={P:100,N:320,B:330,R:510,Q:900,K:10000};
+        const myVal=val[mover.t]||0;
+        const victim = s[mv.m.y][mv.m.x];
+        const victimVal = victim ? (val[victim.t]||0) : 0;
+        const destAttacked = attacked(c, mover.c, mv.m.x, mv.m.y);
+        const destDefended = attacked(c, opp, mv.m.x, mv.m.y);
+        return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
+      }
+      if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: isChk }); continue; }
       const r=minimaxTal(c, d-1+ext, a, b, false);
       if(r.score>me){me=r.score;best=mv}
       a=Math.max(a, me);
@@ -558,6 +741,20 @@ function minimaxTal(s, d, a, b, max){
       apply(c, mv.x, mv.y, mv.m);
       const opp = 'black';
       const ext = isCheck(c, opp) ? 1 : 0;
+      const mover = s[mv.y][mv.x];
+      function isSacrificeMoveLocal(){
+        if(!mover) return false;
+        if(!(mover.t==='Q'||mover.t==='R'||mover.t==='B')) return false;
+        const val={P:100,N:320,B:330,R:510,Q:900,K:10000};
+        const myVal=val[mover.t]||0;
+        const victim = s[mv.m.y][mv.m.x];
+        const victimVal = victim ? (val[victim.t]||0) : 0;
+        const destAttacked = attacked(c, mover.c, mv.m.x, mv.m.y);
+        const destDefended = attacked(c, opp, mv.m.x, mv.m.y);
+        const isChk = ext>0;
+        return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
+      }
+      if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: (ext>0) }); continue; }
       const r=minimaxTal(c, d-1+ext, a, b, true);
       if(r.score<mi){mi=r.score;best=mv}
       b=Math.min(b, mi);
@@ -638,6 +835,27 @@ function evalAgg(s){
   const inCheckBlack = isCheck(s,'black');
   if(inCheckWhite) score += 50;
   if(inCheckBlack) score -= 50;
+  // bônus de rede de mate: reduzir casas seguras do rei adversário
+  function kingPos(side){
+    for(let y=0;y<8;y++) for(let x=0;x<8;x++){ const p=s[y][x]; if(p&&p.c===side&&p.t==='K') return {x,y}; }
+    return null;
+  }
+  const wK=kingPos('white');
+  const bK=kingPos('black');
+  function safeSquaresAround(kx,ky, defenderSide){
+    let safe=0;
+    const dirs=[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+    for(const [dx,dy] of dirs){
+      const nx=kx+dx, ny=ky+dy;
+      if(nx<0||nx>7||ny<0||ny>7) continue;
+      const occ=s[ny][nx];
+      if(occ && occ.c===defenderSide) continue;
+      if(!attacked(s, defenderSide, nx, ny)) safe++;
+    }
+    return safe;
+  }
+  if(wK){ const safeW = safeSquaresAround(wK.x, wK.y, 'white'); score += (8 - safeW) * 6; let pcs=0; for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++) if(s[yy][xx]) pcs++; if(window.talDebug && pcs<=10) logTal('Rede de mate (white king safe squares)', { safeW, pcs }); }
+  if(bK){ const safeB = safeSquaresAround(bK.x, bK.y, 'black'); score -= (8 - safeB) * 6; let pcs=0; for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++) if(s[yy][xx]) pcs++; if(window.talDebug && pcs<=10) logTal('Rede de mate (black king safe squares)', { safeB, pcs }); }
   // mobilidade reforçada
   score += 0.2 * (mobB - mobW);
   return score;
@@ -649,8 +867,10 @@ function minimaxTal(s, d, a, b, max){
   // nó terminal ou profundidade 0: quiescence search para evitar efeito horizonte
   if(d===0 || ms.length===0){
     if(ms.length===0){
-      // cheque-mate ou afogamento: avaliar severamente
-      return { score: max ? -99999 : 99999 };
+      // distingue xeque-mate de afogamento (stalemate)
+      const losing = isCheck(s, color);
+      const score = losing ? (max ? -99999 : 99999) : 0;
+      return { score };
     }
     const qs = qSearch(s, a, b, max);
     return { score: qs };
@@ -664,6 +884,21 @@ function minimaxTal(s, d, a, b, max){
       // extensão por cheque
       const opp = 'white';
       const ext = isCheck(c, opp) ? 1 : 0;
+      // bloquear sacrifícios com peças pesadas que não dão cheque
+      const mover = s[mv.y][mv.x];
+      const isChk = ext>0;
+      function isSacrificeMoveLocal(){
+        if(!mover) return false;
+        if(!(mover.t==='Q'||mover.t==='R'||mover.t==='B')) return false;
+        const val={P:100,N:320,B:330,R:510,Q:900,K:10000};
+        const myVal=val[mover.t]||0;
+        const victim = s[mv.m.y][mv.m.x];
+        const victimVal = victim ? (val[victim.t]||0) : 0;
+        const destAttacked = attacked(c, mover.c, mv.m.x, mv.m.y);
+        const destDefended = attacked(c, opp, mv.m.x, mv.m.y);
+        return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
+      }
+      if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover?.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: isChk }); continue; }
       const r=minimaxTal(c, d-1+ext, a, b, false);
       if(r.score>me){me=r.score;best=mv}
       a=Math.max(a, me);
@@ -677,6 +912,20 @@ function minimaxTal(s, d, a, b, max){
       apply(c, mv.x, mv.y, mv.m);
       const opp = 'black';
       const ext = isCheck(c, opp) ? 1 : 0;
+      const mover = s[mv.y][mv.x];
+      function isSacrificeMoveLocal(){
+        if(!mover) return false;
+        if(!(mover.t==='Q'||mover.t==='R'||mover.t==='B')) return false;
+        const val={P:100,N:320,B:330,R:510,Q:900,K:10000};
+        const myVal=val[mover.t]||0;
+        const victim = s[mv.m.y][mv.m.x];
+        const victimVal = victim ? (val[victim.t]||0) : 0;
+        const destAttacked = attacked(c, mover.c, mv.m.x, mv.m.y);
+        const destDefended = attacked(c, opp, mv.m.x, mv.m.y);
+        const isChk = ext>0;
+        return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
+      }
+      if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover?.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: (ext>0) }); continue; }
       const r=minimaxTal(c, d-1+ext, a, b, true);
       if(r.score<mi){mi=r.score;best=mv}
       b=Math.min(b, mi);
@@ -718,13 +967,45 @@ function orderTal(ms, s, color){
     const av = attacker ? valMap[attacker.t] : 0;
     return vv - av;
   }
+  function isMoveUnsafe(mv){
+    const c = clone(s); apply(c, mv.x, mv.y, mv.m);
+    const mover = s[mv.y][mv.x]; if(!mover) return false;
+    const my = mover.c;
+    const opp = my==='black' ? 'white' : 'black';
+    let att=0, def=0, minAtt=Infinity;
+    for(let yy=0; yy<8; yy++) for(let xx=0; xx<8; xx++){
+      const p=c[yy][xx]; if(!p) continue;
+      const ps=pseudoOn(c,xx,yy);
+      for(const m of ps){
+        if(m.x===mv.m.x && m.y===mv.m.y){
+          if(p.c===opp){ att++; const v=valMap[p.t]||0; if(v<minAtt) minAtt=v; }
+          else def++;
+          break;
+        }
+      }
+    }
+    if(att===0) return false;
+    if(def===0) return true;
+    const myVal = valMap[mover.t]||0;
+    return minAtt <= myVal;
+  }
   return ms.slice().sort((a,b)=>{
+    // Segurança primeiro: lances inseguros depois
+    const aUnsafe = isMoveUnsafe(a)?1:0;
+    const bUnsafe = isMoveUnsafe(b)?1:0;
+    if(aUnsafe!==bUnsafe) return aUnsafe - bUnsafe;
     const aCheck = givesCheckOn(s, a);
     const bCheck = givesCheckOn(s, b);
     if(aCheck!==bCheck) return bCheck - aCheck; // true(1) primeiro
     const ac = a.m.cap ? 1 : 0;
     const bc = b.m.cap ? 1 : 0;
     if(ac!==bc) return bc - ac; // capturas primeiro
+    // Evitar “dança” de rei: lances de rei sem cheque nem captura por último
+    const aIsKing = !!(s[a.y][a.x]) && s[a.y][a.x].t==='K';
+    const bIsKing = !!(s[b.y][b.x]) && s[b.y][b.x].t==='K';
+    const aPassiveKing = aIsKing && !a.m.cap && !aCheck ? 1 : 0;
+    const bPassiveKing = bIsKing && !b.m.cap && !bCheck ? 1 : 0;
+    if(aPassiveKing!==bPassiveKing) return aPassiveKing - bPassiveKing;
     if(ac && bc){ // MVV-LVA
       const diff = mvv(b) - mvv(a);
       if(diff!==0) return diff;
@@ -750,6 +1031,23 @@ function endGame(msg){
   try{ stopClock(); }catch(_){}
   const el=document.getElementById('status'); if(el) el.textContent=msg;
   gameResult = resultFromMsg(msg);
+  // Atualiza livro pessoal do Tal com base no resultado
+  try{
+    const learn = loadTalLearn(); const book = learn.book || (learn.book={});
+    const deltaWhite = (gameResult==='1-0') ? +2 : (gameResult==='0-1') ? -2 : +1;
+    const deltaBlack = (gameResult==='0-1') ? +2 : (gameResult==='1-0') ? -2 : +1;
+    // Usa todo o log (abertura e finais) para aprendizado pessoal
+    for(let i=0;i<talMoveLog.length;i++){
+      const {fen, uci, color} = talMoveLog[i]; if(!fen||!uci) continue;
+      const delta = color==='white' ? deltaWhite : deltaBlack;
+      book[fen] = book[fen] || {};
+      book[fen][uci] = (book[fen][uci]||0) + delta;
+      if(book[fen][uci] > 100) book[fen][uci]=100;
+      if(book[fen][uci] < -20) book[fen][uci]=-20;
+    }
+    saveTalLearn(learn);
+    talMoveLog=[];
+  }catch(_){ /* silencioso */ }
   if(mode==='ava'){
     const w=aiWhiteName, b=aiBlackName;
     if(!aiScores[w]) aiScores[w]={wins:0,draws:0};
@@ -870,8 +1168,14 @@ function renderMoves(){
     const list=document.createElement('div'); list.id='movesList'; list.style.fontSize='14px'; panel.appendChild(list);
     const boardEl=document.getElementById('board'); if(boardEl && boardEl.parentNode){ boardEl.parentNode.insertBefore(panel, boardEl.nextSibling); }
   }
-  let list=document.getElementById('movesList'); if(!list){ list=document.createElement('div'); list.id='movesList'; panel.appendChild(list); }
-  const parts=[]; for(const mv of moveHistory){ parts.push(mv.num+'. '+mv.w + (mv.b?(' '+mv.b):'')); }
+  const list=document.getElementById('movesList') || (function(){ const l=document.createElement('div'); l.id='movesList'; panel.appendChild(l); return l; })();
+  function srcLabel(s){ if(!s) return ''; if(s==='book') return ' (book)'; if(s==='tablebase') return ' (tb)'; return ' (search)'; }
+  const parts=[];
+  for(const mv of moveHistory){
+    const w = mv.w ? (mv.w + srcLabel(mv.wsrc)) : '';
+    const b = mv.b ? (' ' + mv.b + srcLabel(mv.bsrc)) : '';
+    parts.push(mv.num + '. ' + w + b);
+  }
   list.textContent = parts.join(' ');
   // botão Exportar PGN
   const uiEl=document.getElementById('ui');
@@ -912,5 +1216,5 @@ function resultFromMsg(msg){
   return '*';
 }
 </script>
- </body>
- </html>
+</body>
+</html>
