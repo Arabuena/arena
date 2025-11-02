@@ -95,8 +95,12 @@
     <option value="medio" selected>Médio</option>
     <option value="dificil">Difícil</option>
   </select>
+  <select id="aiRedName" aria-label="IA Vermelha" style="display:none"></select>
+  <select id="aiBlackName" aria-label="IA Preta" style="display:none"></select>
   <button onclick="resetGame()">🔄 Reiniciar</button>
 </div>
+
+<div id="aiScoreboard" style="margin-top:8px;"></div>
 
 <script>
 const board = document.getElementById('board');
@@ -105,7 +109,9 @@ const redScoreEl = document.getElementById('redScore');
 const blackScoreEl = document.getElementById('blackScore');
 const modeLabel = document.getElementById('modeLabel');
 const aiLevelSelect = document.getElementById('aiLevel');
-
+const aiRedNameSelect = document.getElementById('aiRedName');
+const aiBlackNameSelect = document.getElementById('aiBlackName');
+const aiScoreboardEl = document.getElementById('aiScoreboard');
 let game = [];
 let selected = null;
 let currentTurn = 'red';
@@ -113,14 +119,56 @@ let possibleMoves = [];
 let useAI = false;
 let redCount = 12, blackCount = 12;
 let aiLevel = 'medio';
+let aiMode = 'pvp'; // 'pvp' | 'hva' (Jogador vs IA) | 'ava' (IA vs IA)
+let startingColor = 'red'; // alterna ou randomiza início para reduzir viés
 
-ailevelSelectExistsFix = (function(){ try { return !!aiLevelSelect; } catch(e) { return false; } })();
-if (ailevelSelectExistsFix) {
-  aiLevelSelect.addEventListener('change', () => {
-    aiLevel = aiLevelSelect.value;
-  });
+// Perfis de IA (substitua pelos campeões reais que desejar)
+const aiProfiles = {
+  'Capivara (Fácil)': { level: 'facil' },
+  'Arara (Médio)': { level: 'medio' },
+  'Onça (Difícil)': { level: 'dificil' }
+};
+// Placar persistente
+let aiScores = JSON.parse(localStorage.getItem('damas_ai_scores') || '{}');
+let aiRedName = Object.keys(aiProfiles)[1];   // padrão médio
+let aiBlackName = Object.keys(aiProfiles)[2]; // padrão difícil
+
+function saveScores() {
+  localStorage.setItem('damas_ai_scores', JSON.stringify(aiScores));
+}
+function renderScoreboard() {
+  if (aiMode !== 'ava') {
+    aiScoreboardEl.textContent = '';
+    return;
+  }
+  const r = aiScores[aiRedName] || 0;
+  const b = aiScores[aiBlackName] || 0;
+  aiScoreboardEl.textContent = `Placar: ${aiRedName} ${r} × ${b} ${aiBlackName}`;
 }
 
+// Preenche selects de IA e listeners
+function initAISelects() {
+  const names = Object.keys(aiProfiles);
+  aiRedNameSelect.innerHTML = '';
+  aiBlackNameSelect.innerHTML = '';
+  names.forEach(n => {
+    const o1 = document.createElement('option'); o1.value = n; o1.textContent = n;
+    const o2 = document.createElement('option'); o2.value = n; o2.textContent = n;
+    aiRedNameSelect.appendChild(o1); aiBlackNameSelect.appendChild(o2);
+  });
+  aiRedNameSelect.value = aiRedName;
+  aiBlackNameSelect.value = aiBlackName;
+  aiRedNameSelect.onchange = () => { aiRedName = aiRedNameSelect.value; renderScoreboard(); };
+  aiBlackNameSelect.onchange = () => { aiBlackName = aiBlackNameSelect.value; renderScoreboard(); };
+}
+initAISelects();
+// Oculta o seletor inicialmente (modo PvP)
+if (aiLevelSelect) {
+  aiLevelSelect.addEventListener('change', () => { aiLevel = aiLevelSelect.value; });
+  aiLevelSelect.style.display = 'none';
+}
+
+// Inicializa o tabuleiro e estado inicial
 function initBoard() {
   board.innerHTML = '';
   game = [];
@@ -132,40 +180,56 @@ function initBoard() {
       cell.classList.add((x + y) % 2 === 0 ? 'light' : 'dark');
       cell.dataset.x = x;
       cell.dataset.y = y;
+      cell.addEventListener('click', () => onCellClick(x, y));
       board.appendChild(cell);
 
       if ((x + y) % 2 !== 0 && y < 3) game[y][x] = { color: 'black', king: false };
       else if ((x + y) % 2 !== 0 && y > 4) game[y][x] = { color: 'red', king: false };
       else game[y][x] = null;
-
-      cell.addEventListener('click', () => onCellClick(x, y));
     }
   }
   renderBoard();
   updateTurn();
 }
 
+// Renderiza peças e destaques no grid
 function renderBoard() {
   for (let y = 0; y < 8; y++) {
     for (let x = 0; x < 8; x++) {
-      const cell = board.children[y * 8 + x];
+      const idx = y * 8 + x;
+      const cell = board.children[idx];
+      if (!cell) continue;
       cell.innerHTML = '';
       cell.classList.remove('highlight');
-      if (game[y][x]) {
-        const piece = document.createElement('div');
-        piece.classList.add('piece', game[y][x].color);
-        if (game[y][x].king) piece.classList.add('king');
-        if (selected && selected.x === x && selected.y === y)
-          piece.classList.add('selected');
-        cell.appendChild(piece);
+
+      // Seleção visual
+      if (selected && selected.x === x && selected.y === y) {
+        cell.classList.add('selected');
+      } else {
+        cell.classList.remove('selected');
+      }
+
+      const piece = game[y][x];
+      if (piece) {
+        const el = document.createElement('div');
+        el.className = `piece ${piece.color}`;
+        if (piece.king) el.classList.add('king');
+        // Clique na peça encaminha para a célula
+        el.addEventListener('click', () => onCellClick(x, y));
+        cell.appendChild(el);
       }
     }
   }
+  // Realça movimentos possíveis
   highlightMoves();
 }
 
+function isAIColor(color) {
+  return aiMode === 'ava' || (aiMode === 'hva' && color === 'black');
+}
+
 function onCellClick(x, y) {
-  if (useAI && currentTurn === 'black') return; // Desativa jogadas manuais da IA
+  if (isAIColor(currentTurn)) return; // Desativa jogadas manuais da IA
 
   const piece = game[y][x];
   if (selected) {
@@ -253,15 +317,15 @@ function makeMove(x1, y1, move) {
   selected = {x:move.x, y:move.y};
   const nextMoves = getValidMoves(move.x, move.y).filter(m => m.capture);
   if (move.capture && nextMoves.length > 0) {
-    // Se for IA, continuar automaticamente a sequência de capturas
-    if (useAI && currentTurn === 'black') {
-      const next = chooseAICapture(move.x, move.y, nextMoves);
-      makeMove(move.x, move.y, next);
-      return;
+    // IA continua capturas em cadeia
+    if (isAIColor(currentTurn)) {
+        const next = chooseAICapture(move.x, move.y, nextMoves);
+        makeMove(move.x, move.y, next);
+        return;
     } else {
-      possibleMoves = nextMoves;
-      renderBoard();
-      return;
+        possibleMoves = nextMoves;
+        renderBoard();
+        return;
     }
   }
 
@@ -272,20 +336,24 @@ function makeMove(x1, y1, move) {
   updateTurn();
   checkWin();
 
-  if (useAI && currentTurn === 'black') setTimeout(aiMove, 500);
+  // IA joga quando for o turno dela (suporta IA vs IA)
+  if (isAIColor(currentTurn)) setTimeout(() => aiMove(currentTurn), 500);
 }
 
-function aiMove() {
-  if (aiLevel === 'facil') return aiMoveEasy();
-  if (aiLevel === 'medio') return aiMoveMedium();
-  return aiMoveHard();
+function aiMove(color = 'black') {
+  const level = aiMode === 'ava'
+    ? (color === 'red' ? aiProfiles[aiRedName].level : aiProfiles[aiBlackName].level)
+    : aiLevel;
+  if (level === 'facil') return aiMoveEasy(color);
+  if (level === 'medio') return aiMoveMedium(color);
+  return aiMoveHard(color);
 }
 
-function aiMoveEasy() {
+function aiMoveEasy(color = 'black') {
   let moves = [];
   for (let y = 0; y < 8; y++) {
     for (let x = 0; x < 8; x++) {
-      if (game[y][x] && game[y][x].color === 'black') {
+      if (game[y][x] && game[y][x].color === color) {
         const m = getValidMoves(x, y);
         for (let move of m) moves.push({x,y,move});
       }
@@ -297,11 +365,11 @@ function aiMoveEasy() {
   makeMove(chosen.x, chosen.y, chosen.move);
 }
 
-function aiMoveMedium() {
+function aiMoveMedium(color = 'black') {
   let moves = [];
   for (let y = 0; y < 8; y++) {
     for (let x = 0; x < 8; x++) {
-      if (game[y][x] && game[y][x].color === 'black') {
+      if (game[y][x] && game[y][x].color === color) {
         const m = getValidMoves(x, y);
         for (let move of m) moves.push({x,y,move});
       }
@@ -325,14 +393,15 @@ function aiMoveMedium() {
   makeMove(moves[0].x, moves[0].y, moves[0].move);
 }
 
-function aiMoveHard() {
+function aiMoveHard(color = 'black') {
   const depth = computeHardDepth();
   const state = cloneGame(game);
-  const result = minimax(state, depth, -Infinity, Infinity, true); // pretas maximizam
+  const result = minimax(state, depth, -Infinity, Infinity, color === 'black');
   if (!result || !result.best) return;
   makeMove(result.best.x, result.best.y, result.best.move);
 }
 
+// Profundidade adaptativa para IA difícil, conforme número de peças
 function computeHardDepth() {
   let pieces = 0;
   for (let y = 0; y < 8; y++) {
@@ -589,20 +658,58 @@ function updateScore() {
 }
 
 function checkWin() {
-  if (blackCount === 0) { alert("🏆 Vermelho venceu!"); return; }
-  else if (redCount === 0) { alert("🏆 Preto venceu!"); return; }
-
+  if (redCount === 0) {
+    alert("🏆 Preto venceu!");
+    if (aiMode === 'ava') {
+      aiScores[aiBlackName] = (aiScores[aiBlackName] || 0) + 1;
+      saveScores(); renderScoreboard();
+    }
+    return;
+  }
+  if (blackCount === 0) {
+    alert("🏆 Vermelho venceu!");
+    if (aiMode === 'ava') {
+      aiScores[aiRedName] = (aiScores[aiRedName] || 0) + 1;
+      saveScores(); renderScoreboard();
+    }
+    return;
+  }
   // Vitória por bloqueio (sem movimentos disponíveis)
   const redHasMoves = hasAnyMoves('red');
   const blackHasMoves = hasAnyMoves('black');
-  if (!redHasMoves && blackHasMoves) { alert("🏆 Preto venceu! (sem movimentos)"); return; }
-  if (!blackHasMoves && redHasMoves) { alert("🏆 Vermelho venceu! (sem movimentos)"); return; }
+  if (!redHasMoves && blackHasMoves) {
+    alert("🏆 Preto venceu! (sem movimentos)");
+    if (aiMode === 'ava') {
+      aiScores[aiBlackName] = (aiScores[aiBlackName] || 0) + 1;
+      saveScores(); renderScoreboard();
+    }
+    return;
+  }
+  if (!blackHasMoves && redHasMoves) {
+    alert("🏆 Vermelho venceu! (sem movimentos)");
+    if (aiMode === 'ava') {
+      aiScores[aiRedName] = (aiScores[aiRedName] || 0) + 1;
+      saveScores(); renderScoreboard();
+    }
+    return;
+  }
 }
 
 function toggleAI() {
-  useAI = !useAI;
-  modeLabel.textContent = useAI ? "Jogador vs IA" : "PvP";
-  aiLevelSelect.style.display = useAI ? 'inline-block' : 'none';
+  if (aiMode === 'pvp') {
+    aiMode = 'hva';
+    modeLabel.textContent = 'Jogador vs IA';
+  } else if (aiMode === 'hva') {
+    aiMode = 'ava';
+    modeLabel.textContent = 'IA vs IA';
+  } else {
+    aiMode = 'pvp';
+    modeLabel.textContent = 'PvP';
+  }
+  aiLevelSelect.style.display = aiMode === 'pvp' ? 'none' : 'inline-block';
+  aiRedNameSelect.style.display = aiMode === 'ava' ? 'inline-block' : 'none';
+  aiBlackNameSelect.style.display = aiMode === 'ava' ? 'inline-block' : 'none';
+  renderScoreboard();
   resetGame();
 }
 
@@ -611,9 +718,19 @@ function resetGame() {
   blackCount = 12;
   selected = null;
   possibleMoves = [];
-  currentTurn = 'red';
+  // alterna início em partidas consecutivas IA vs IA para equilibrar
+  if (aiMode === 'ava') {
+    startingColor = startingColor === 'red' ? 'black' : 'red';
+    currentTurn = startingColor;
+  } else {
+    currentTurn = 'red';
+  }
   initBoard();
   updateScore();
+
+  if (isAIColor(currentTurn)) {
+    setTimeout(() => aiMove(currentTurn), 500);
+  }
 }
 
 initBoard();

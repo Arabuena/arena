@@ -18,7 +18,24 @@ h1{text-align:center;margin:8px 0 12px;font-weight:600;font-size:clamp(20px,4.6v
 #ui button:hover{filter:brightness(1.08)}
 #ui button:active{transform:translateY(1px)}
 @media(max-width:600px){body{padding:12px}#ui{gap:10px}}
-</style></head><body><h1>Jogo de Xadrez</h1><div class="turn" id="turn"></div><div id="status" style="text-align:center;margin-bottom:6px"></div><div id="clocks" style="text-align:center;margin-bottom:6px">Brancas: <span id="clockW">--:--</span> • Pretas: <span id="clockB">--:--</span></div><div id="board"></div><div id="ui"><label>Modo:<select id="mode"><option value="pvp">Jogador vs Jogador</option><option value="ai">Jogador vs IA</option></select></label><label>Nível:<select id="level"><option value="facil">Fácil</option><option value="medio">Médio</option><option value="dificil">Difícil</option><option value="tal">Muito Difícil (Tal)</option></select></label><label>Tempo:<select id="time"><option value="classica">Clássica (60:00)</option><option value="rapida">Rápida (15:00)</option><option value="blitz" selected>Blitz (5:00)</option><option value="bullet">Bullet (1:00)</option></select></label><label>Som:<input id="snd" type="checkbox" checked></label><label>Volume:<input id="vol" type="range" min="0" max="100" value="100"></label><button id="reset">Reiniciar</button><button id="draw">Empatar</button><button id="resign">Desistir</button></div><script>const U={white:{K:"\u2654",Q:"\u2655",R:"\u2656",B:"\u2657",N:"\u2658",P:"\u2659"},black:{K:"\u265A",Q:"\u265B",R:"\u265C",B:"\u265D",N:"\u265E",P:"\u265F"}};let g,turn,sel=null,opts=[],mode='ai',level='medio';const bd=document.getElementById('board');document.getElementById('mode').onchange=e=>{mode=e.target.value};document.getElementById('level').onchange=e=>{level=e.target.value};document.getElementById('reset').onclick=init;
+</style></head><body><h1>Jogo de Xadrez</h1><div class="turn" id="turn"></div><div id="status" style="text-align:center;margin-bottom:6px"></div><div id="clocks" style="text-align:center;margin-bottom:6px">Brancas: <span id="clockW">--:--</span> • Pretas: <span id="clockB">--:--</span></div><div id="board"></div><div id="ui"><label>Modo:<select id="mode"><option value="pvp">Jogador vs Jogador</option><option value="ai">Jogador vs IA</option><option value="ava">IA vs IA</option></select></label><label>Nível:<select id="level"><option value="facil">Fácil</option><option value="medio">Médio</option><option value="dificil">Difícil</option><option value="tal">Muito Difícil (Tal)</option></select></label><label id="aiWhiteLabel" style="display:none">IA Brancas:<select id="aiWhiteName" style="display:none"></select></label><label id="aiBlackLabel" style="display:none">IA Pretas:<select id="aiBlackName" style="display:none"></select></label><label>Tempo:<select id="time"><option value="classica">Clássica (60:00)</option><option value="rapida">Rápida (15:00)</option><option value="blitz" selected>Blitz (5:00)</option><option value="bullet">Bullet (1:00)</option></select></label><label>Som:<input id="snd" type="checkbox" checked></label><label>Volume:<input id="vol" type="range" min="0" max="100" value="100"></label><button id="reset">Reiniciar</button><button id="draw">Empatar</button><button id="resign">Desistir</button><button id="startAva" style="display:none">Iniciar</button></div><div id="aiScore" style="text-align:center;margin-top:8px"></div><script>const U={white:{K:"\u2654",Q:"\u2655",R:"\u2656",B:"\u2657",N:"\u2658",P:"\u2659"},black:{K:"\u265A",Q:"\u265B",R:"\u265C",B:"\u265D",N:"\u265E",P:"\u265F"}};let g,turn,sel=null,opts=[],mode='ai',level='medio';const bd=document.getElementById('board');
+let aiWorker=null;
+// Perfis de IA e placar persistente
+const aiProfiles={"Arara (Médio)":"medio","Onça (Difícil)":"dificil","Tucano (Fácil)":"facil","Tal (Agressivo)":"tal"};
+let aiWhiteName='Arara (Médio)', aiBlackName='Onça (Difícil)';
+let aiScores = JSON.parse(localStorage.getItem('chess_ai_scores')||'{}');
+function saveScores(){ try{ localStorage.setItem('chess_ai_scores', JSON.stringify(aiScores)); }catch(_){}}
+function renderScore(){ try{ const el=document.getElementById('aiScore'); if(!el) return; const entries=Object.entries(aiScores).sort((a,b)=>((b[1]?.wins||0)-(a[1]?.wins||0))); el.textContent = entries.length? entries.map(([n,s])=>`${n}: ${s.wins||0} vitórias, ${s.draws||0} empates`).join(' | '): 'Placar IA vazio'; }catch(_){} }
+const aiWhiteLabel=document.getElementById('aiWhiteLabel');const aiBlackLabel=document.getElementById('aiBlackLabel');
+const aiWhiteNameSelect=document.getElementById('aiWhiteName');const aiBlackNameSelect=document.getElementById('aiBlackName');
+const startAvaBtn=document.getElementById('startAva');
+function populateAISelects(){ if(!aiWhiteNameSelect||!aiBlackNameSelect) return; const names=Object.keys(aiProfiles); aiWhiteNameSelect.innerHTML=''; aiBlackNameSelect.innerHTML=''; names.forEach(n=>{ const o1=document.createElement('option'); o1.value=n; o1.textContent=n; aiWhiteNameSelect.appendChild(o1); const o2=document.createElement('option'); o2.value=n; o2.textContent=n; aiBlackNameSelect.appendChild(o2); }); aiWhiteNameSelect.value=aiWhiteName; aiBlackNameSelect.value=aiBlackName; aiWhiteNameSelect.onchange=()=>{ aiWhiteName=aiWhiteNameSelect.value; renderScore(); }; aiBlackNameSelect.onchange=()=>{ aiBlackName=aiBlackNameSelect.value; renderScore(); }; }
+function toggleAIFields(){ try{ const levelEl=document.getElementById('level'); const levelLabel=levelEl?levelEl.parentElement:null; if(mode==='ava'){ if(levelLabel) levelLabel.style.display='none'; if(aiWhiteLabel) aiWhiteLabel.style.display='flex'; if(aiBlackLabel) aiBlackLabel.style.display='flex'; if(aiWhiteNameSelect) aiWhiteNameSelect.style.display='inline'; if(aiBlackNameSelect) aiBlackNameSelect.style.display='inline'; if(startAvaBtn) startAvaBtn.style.display='inline'; } else { if(levelLabel) levelLabel.style.display='flex'; if(aiWhiteLabel) aiWhiteLabel.style.display='none'; if(aiBlackLabel) aiBlackLabel.style.display='none'; if(aiWhiteNameSelect) aiWhiteNameSelect.style.display='none'; if(aiBlackNameSelect) aiBlackNameSelect.style.display='none'; if(startAvaBtn) startAvaBtn.style.display='none'; } }catch(_){} }
+document.getElementById('mode').onchange=e=>{ mode=e.target.value; toggleAIFields(); };
+document.getElementById('level').onchange=e=>{ level=e.target.value };
+document.getElementById('reset').onclick=()=>{ init(); if(mode!=='ava'){ try{ startClock(); switchClock(); }catch(_){} } };
+if(startAvaBtn){ startAvaBtn.onclick=()=>{ if(mode==='ava'){ init(); updateStatus(); try{ startClock(); switchClock(); }catch(_){} setTimeout(()=>{ try{ runAI(); }catch(_){} }, thinkDelay()); } }; }
+populateAISelects(); toggleAIFields(); renderScore();
 const btnDraw=document.getElementById('draw');
 const btnResign=document.getElementById('resign');
 if(btnDraw){ btnDraw.onclick=()=>{ 
@@ -40,7 +57,7 @@ if(btnResign){ btnResign.onclick=()=>{
 }; }
 // Inicialização robusta do DOM
 (function(){
-  const start=()=>{ try{ init(); updateStatus(); }catch(e){ console.error(e); } };
+  const start=()=>{ try{ init(); updateStatus(); if(mode!=='ava'){ try{ startClock(); switchClock(); }catch(_){} } }catch(e){ console.error(e); } };
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
@@ -116,7 +133,10 @@ function tick(){
     if(tB<=0) timeOver('black');
   }
 }
-function timeOver(color){ stopClock(); const winner = (color==='white') ? 'Pretas vencem por tempo' : 'Brancas vencem por tempo'; const el=document.getElementById('status'); if(el) el.textContent='Tempo esgotado! '+winner; playSound('mate'); bd.querySelectorAll('.sq').forEach(s=> s.onclick=null); }
+function timeOver(color){
+  const winner = (color==='white') ? 'Pretas vencem por tempo' : 'Brancas vencem por tempo';
+  endGame('Tempo esgotado! '+winner);
+}
 function init(){enp=null;halfmoveClock=0;posCounts={};drawOffer=null;moveHistory=[];fullmoveNumber=1;gameResult='*';g=[...Array(8)].map(_=>Array(8).fill(null));turn='white';// peças
 for(let x=0;x<8;x++){g[1][x]={t:'P',c:'white',m:false};g[6][x]={t:'P',c:'black',m:false} }
 [['R','N','B','Q','K','B','N','R']].forEach(arr=>{for(let x=0;x<8;x++)g[0][x]={t:arr[x],c:'white',m:false};for(let x=0;x<8;x++)g[7][x]={t:arr[x],c:'black',m:false} });render();updTurn();initClock();recordPosition();syncDrawButtons();renderMoves();
@@ -140,7 +160,8 @@ function render(){
     }
   }
   doHighlight();
-  bd.querySelectorAll('.sq').forEach(s=>s.onclick=onClick)
+  const humanTurn = (mode==='pvp') || (mode==='ai' && turn==='white');
+  bd.querySelectorAll('.sq').forEach(s=>{ s.onclick = humanTurn ? onClick : null; s.style.cursor = humanTurn ? 'pointer' : 'default'; });
 }
 function doHighlight(){
   if(sel){
@@ -354,11 +375,11 @@ function execMove(x,y,m){
   if(capture || (p && p.t==='P')) halfmoveClock=0; else halfmoveClock++;
   // se peão avançou duas casas, habilita en passant para o oponente
   if(p && p.t==='P' && Math.abs(m.y - y)===2){ const dir=p.c==='white'?1:-1; const opp = (turn==='white'?'black':'white'); enp={x:x,y:y+dir,forColor:opp}; }
-  sel=null; opts=[]; turn=turn==='white'?'black':'white'; render(); updTurn(); updateStatus(); playSound(capture?'cap':'move'); startClock(); switchClock();
-  if(mode==='ai'&&turn==='black') setTimeout(()=>{
+  sel=null; opts=[]; turn=turn==='white'?'black':'white'; render(); updTurn(); updateStatus(); playSound(capture?'cap':'move'); if(gameResult==='*'){ startClock(); switchClock(); }
+  if(gameResult==='*' && ((mode==='ai'&&turn==='black') || mode==='ava')) setTimeout(()=>{
     // IA: aceitar/recusar oferta de empate
     if(drawOffer){ const s=clone(g); const sc=evalS(s); if(sc<=-50){ playSound('draw'); endGame('Empate aceito'); drawOffer=null; return; } else { drawOffer=null; updateStatus(); syncDrawButtons(); } }
-    runAI(); updateStatus();
+    if(gameResult==='*'){ runAI(); updateStatus(); }
   }, thinkDelay());
 }
 
@@ -371,23 +392,60 @@ function doMove(x,y,m){
   execMove(x,y,m);
 }
 
-function ai(){if(level==='facil')return aiEasy();if(level==='medio')return aiMed();if(level==='dificil')return aiHard();return aiTal()}
+function levelFor(color){ if(mode==='ava'){ const name=(color==='white'?aiWhiteName:aiBlackName); return aiProfiles[name]||'medio'; } return level; }
+function ai(color){ const lvl=levelFor(color); if(lvl==='facil')return aiEasy(color); if(lvl==='medio')return aiMed(color); if(lvl==='dificil')return aiHard(color); return aiTal(color); }
 function runAI(){
   try{
     const beforeTurn=turn;
-    ai();
-    // Se por algum motivo a IA falhar, garantir uma jogada simples em até 1,2s
-    setTimeout(()=>{ if(turn==='black') { try{ aiEasy(); }catch(_){} } }, 1200);
+    const lvl = levelFor(beforeTurn);
+    if(!aiWorker){ try{ aiWorker = new Worker('ai-worker.js'); }catch(e){ aiWorker=null; } }
+    if(aiWorker){
+      let resolved=false;
+      const onMsg=(ev)=>{
+        resolved=true;
+        try{ aiWorker.removeEventListener('message', onMsg); }catch(_){}
+        if(turn!==beforeTurn) return;
+        if(gameResult && gameResult!=='*') return;
+        const d=ev.data||{};
+        if(typeof d.x==='number' && typeof d.y==='number' && d.m){
+          // Validar jogada enviada pelo worker contra o estado atual
+          const inBounds = (d.x>=0 && d.x<8 && d.y>=0 && d.y<8);
+          const piece = inBounds ? (g[d.y] && g[d.y][d.x]) : null;
+          if(piece && piece.c===beforeTurn){
+            try{
+              const legals = legalOn(g, d.x, d.y) || [];
+              const isLegal = legals.some(mm=> mm.x===d.m.x && mm.y===d.m.y && (!!mm.castle === !!d.m.castle) && (!!mm.ep === !!d.m.ep));
+              if(isLegal){ doMove(d.x,d.y,d.m); }
+              else { try{ aiEasy(beforeTurn); }catch(__){} }
+            }catch(_){ try{ aiEasy(beforeTurn); }catch(__){} }
+          } else {
+            try{ aiEasy(beforeTurn); }catch(_){ /* fallback silencioso */ }
+          }
+        } else {
+          try{ aiEasy(beforeTurn); }catch(_){}
+        }
+        updateStatus();
+      };
+      aiWorker.addEventListener('message', onMsg);
+      try{
+        const payload={ g: JSON.parse(JSON.stringify(g)), color: beforeTurn, level: lvl, enp: enp };
+        aiWorker.postMessage(payload);
+      }catch(_){ /* fallback abaixo */ }
+      setTimeout(()=>{ if(!resolved && turn===beforeTurn && (gameResult==='*')){ try{ aiEasy(beforeTurn); }catch(_){} updateStatus(); } }, Math.max(900, thinkDelay()+400));
+    } else {
+      ai(beforeTurn);
+      setTimeout(()=>{ if(turn===beforeTurn) { try{ aiEasy(beforeTurn); }catch(_){} } }, 1200);
+    }
   }catch(e){
-    // Fallback imediato
-    try{ aiEasy(); }catch(_){ /* se também falhar, não travar */ }
+    try{ aiEasy(turn); }catch(_){}
   }
 }
 function thinkDelay(){
   try{
-    let base=(level==='facil')?200:(level==='medio')?600:(level==='dificil')?1200:1600;
+    const lvl = levelFor(turn);
+    let base=(lvl==='facil')?200:(lvl==='medio')?600:(lvl==='dificil')?1200:1600;
     if(timeMode==='classica') base+=600; else if(timeMode==='rapida') base+=300; else if(timeMode==='blitz') base+=150; else if(timeMode==='bullet') base+=80;
-    if(level==='tal'){ base += 200 * (typeof compDepthTal==='function' ? compDepthTal() : 4); }
+    if(lvl==='tal'){ base += 200 * (typeof compDepthTal==='function' ? compDepthTal() : 4); }
     const jitter=Math.floor(Math.random()*200)-100;
     return Math.max(50, base + jitter);
   }catch(e){ return 250; }
@@ -415,17 +473,17 @@ function legalOn(s,x,y){
   return ms.filter(m=>{const c=clone(s);apply(c,x,y,m);return !isCheck(c,p.c)})
 }
 function evalS(s){let score=0;const val={P:100,N:320,B:320,R:500,Q:900,K:0};let mobB=0,mobW=0;for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(!p)continue;score+=p.c==='black'?val[p.t]:-val[p.t];if(p.c==='black')mobB+=pseudoOn(s,x,y).length;else mobW+=pseudoOn(s,x,y).length}return score+0.1*(mobB-mobW)}
-function aiEasy(){const ms=allLegal(g,'black');if(ms.length===0)return;const r=ms[Math.floor(Math.random()*ms.length)];doMove(r.x,r.y,r.m)}
-function aiMed(){const ms=allLegal(g,'black');if(ms.length===0)return;let best=ms[0],bs=-1e9;for(const mv of ms){const s=clone(g);apply(s,mv.x,mv.y,mv.m);const sc=evalS(s);if(sc>bs){bs=sc;best=mv}}doMove(best.x,best.y,best.m)}
-function aiHard(){const depth=compDepth();const s=clone(g);const r=minimax(s,depth,-1e9,1e9,true);if(r&&r.best)doMove(r.best.x,r.best.y,r.best.m)}
+function aiEasy(color){const ms=allLegal(g,color);if(ms.length===0)return;const r=ms[Math.floor(Math.random()*ms.length)];doMove(r.x,r.y,r.m)}
+function aiMed(color){const ms=allLegal(g,color);if(ms.length===0)return;let best=ms[0],bs=-1e9;for(const mv of ms){const s=clone(g);apply(s,mv.x,mv.y,mv.m);let sc=evalS(s);sc = (color==='black')? sc : -sc; if(sc>bs){bs=sc;best=mv}}doMove(best.x,best.y,best.m)}
+function aiHard(color){const depth=compDepth();const s=clone(g);const r=minimax(s,depth,-1e9,1e9,(color==='black'));if(r&&r.best)doMove(r.best.x,r.best.y,r.best.m)}
 function compDepth(){let pcs=0;for(let y=0;y<8;y++)for(let x=0;x<8;x++)if(g[y][x])pcs++;if(pcs<=10)return 4;if(pcs<=18)return 3;return 2}
 function minimax(s,d,a,b,max){const color=max?'black':'white';const ms=allLegal(s,color);if(d===0||ms.length===0){if(ms.length===0)return{score:max?-9999:9999};return{score:evalS(s)}}let best=null;if(max){let me=-1e9;for(const mv of order(ms)){const c=clone(s);apply(c,mv.x,mv.y,mv.m);const r=minimax(c,d-1,a,b,false);if(r.score>me){me=r.score;best=mv}a=Math.max(a,me);if(b<=a)break}return{score:me,best}}else{let mi=1e9;for(const mv of order(ms)){const c=clone(s);apply(c,mv.x,mv.y,mv.m);const r=minimax(c,d-1,a,b,true);if(r.score<mi){mi=r.score;best=mv}b=Math.min(b,mi);if(b<=a)break}return{score:mi,best}}}
 function order(ms){return ms.slice().sort((a,b)=>((b.m.cap?1:0)-(a.m.cap?1:0)))}
 // --- IA Tal (Mikhail Tal style): agressiva, profunda e tática ---
-function aiTal(){
+function aiTal(color){
   const depth = compDepthTal();
   const s = clone(g);
-  const r = minimaxTal(s, depth, -1e9, 1e9, true);
+  const r = minimaxTal(s, depth, -1e9, 1e9, (color==='black'));
   if(r && r.best) doMove(r.best.x, r.best.y, r.best.m);
 }
 
@@ -541,10 +599,10 @@ function givesCheckOn(s, mv){
 }
 
 // --- IA Tal (Mikhail Tal style): agressiva, profunda e tática ---
-function aiTal(){
+function aiTal(color){
   const depth = compDepthTal();
   const s = clone(g);
-  const r = minimaxTal(s, depth, -1e9, 1e9, true);
+  const r = minimaxTal(s, depth, -1e9, 1e9, (color==='black'));
   if(r && r.best) doMove(r.best.x, r.best.y, r.best.m);
 }
 
@@ -692,6 +750,15 @@ function endGame(msg){
   try{ stopClock(); }catch(_){}
   const el=document.getElementById('status'); if(el) el.textContent=msg;
   gameResult = resultFromMsg(msg);
+  if(mode==='ava'){
+    const w=aiWhiteName, b=aiBlackName;
+    if(!aiScores[w]) aiScores[w]={wins:0,draws:0};
+    if(!aiScores[b]) aiScores[b]={wins:0,draws:0};
+    if(gameResult==='1-0'){ aiScores[w].wins++; }
+    else if(gameResult==='0-1'){ aiScores[b].wins++; }
+    else if(gameResult==='1/2-1/2'){ aiScores[w].draws++; aiScores[b].draws++; }
+    saveScores(); renderScore();
+  }
   if(bd) bd.querySelectorAll('.sq').forEach(s=> s.onclick=null);
 }
 function getCastleRights(s){
