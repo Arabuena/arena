@@ -73,15 +73,94 @@ function compDepth(s){ let pcs=0; for(let y=0;y<8;y++) for(let x=0;x<8;x++) if(s
 function minimax(s,d,a,b,max){ const color=max?'black':'white'; const ms=allLegal(s,color); if(d===0||ms.length===0){ if(ms.length===0) return {score:max?-9999:9999}; return {score:evalS(s)} } let best=null; if(max){ let me=-1e9; for(const mv of order(ms)){ const c=clone(s); apply(c,mv.x,mv.y,mv.m); const r=minimax(c,d-1,a,b,false); if(r.score>me){ me=r.score; best=mv; } a=Math.max(a,me); if(b<=a) break; } return {score:me,best}; } else { let mi=1e9; for(const mv of order(ms)){ const c=clone(s); apply(c,mv.x,mv.y,mv.m); const r=minimax(c,d-1,a,b,true); if(r.score<mi){ mi=r.score; best=mv; } b=Math.min(b,mi); if(b<=a) break; } return {score:mi,best}; } }
 
 // Tal-style
-function evalAgg(s){ const val={P:100,N:320,B:330,R:510,Q:900,K:0}; let score=0,mobB=0,mobW=0; for(let y=0;y<8;y++) for(let x=0;x<8;x++){ const p=s[y][x]; if(!p) continue; score += (p.c==='black'? val[p.t] : -val[p.t]); const mlen=pseudoOn(s,x,y).length; if(p.c==='black') mobB+=mlen; else mobW+=mlen; const cx=Math.abs(3.5-x), cy=Math.abs(3.5-y); const centerBonus=Math.max(0,3-(cx+cy)); score += (p.c==='black'? +centerBonus*2 : -centerBonus*2); if(p.t==='P'){ if(p.c==='black') score += (6-y)*5; else score -= (y-1)*5; } } const inCheckWhite=isCheck(s,'white'); const inCheckBlack=isCheck(s,'black'); if(inCheckWhite) score += 50; if(inCheckBlack) score -= 50; score += 0.2*(mobB-mobW); return score; }
+function evalAgg(s){
+  // Avaliação agressiva: material + mobilidade reforçada + segurança do rei + controle de centro + avanço de peões
+  const val={P:100,N:320,B:330,R:510,Q:900,K:0};
+  let score=0, mobB=0, mobW=0;
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const p=s[y][x]; if(!p) continue;
+    // material
+    score += (p.c==='black'? val[p.t] : -val[p.t]);
+    // mobilidade bruta
+    const mlen = pseudoOn(s,x,y).length;
+    if(p.c==='black') mobB += mlen; else mobW += mlen;
+    // centro: bonus por proximidade ao centro
+    const cx = Math.abs(3.5 - x), cy = Math.abs(3.5 - y); const centerBonus = Math.max(0, 3 - (cx+cy));
+    score += (p.c==='black'? +centerBonus*2 : -centerBonus*2);
+    // avanço de peões
+    if(p.t==='P'){
+      if(p.c==='black') score += (6 - y) * 5; else score -= (y - 1) * 5;
+    }
+    // penalização por peças penduradas (atacadas e mal defendidas)
+    const opp = p.c==='black' ? 'white' : 'black';
+    const def = countDefenders(s, p.c, x, y);
+    const att = countAttackers(s, opp, x, y);
+    if(att.count > 0 && def.count === 0){
+      const penalty = (valMap[p.t] || 0) * 0.6;
+      score += (p.c==='black' ? -penalty : +penalty);
+    } else if(att.count > 0 && def.count > 0){
+      // SEE simples: se menor atacante adversário cobre a troca, penaliza um pouco
+      const myVal = valMap[p.t] || 0;
+      if(att.minVal <= myVal){
+        const penalty = (myVal - att.minVal) * 0.4 + 40;
+        score += (p.c==='black' ? -penalty : +penalty);
+      }
+    }
+  }
+  // segurança do rei: bônus por colocar o rei adversário em xeque
+  const inCheckWhite = isCheck(s,'white');
+  const inCheckBlack = isCheck(s,'black');
+  if(inCheckWhite) score += 50;
+  if(inCheckBlack) score -= 50;
+  // mobilidade reforçada
+  score += 0.2 * (mobB - mobW);
+  return score;
+}
 
-function orderTal(ms,s,color){ const valMap={P:100,N:320,B:330,R:510,Q:900,K:10000}; function mvv(mv){ const victim = s[mv.m.y][mv.m.x]; const attacker = s[mv.y][mv.x]; const vv = victim ? valMap[victim.t] : 0; const av = attacker ? valMap[attacker.t] : 0; return vv - av; } return ms.slice().sort((a,b)=>{ const aCheck=givesCheckOn(s,a); const bCheck=givesCheckOn(s,b); if(aCheck!==bCheck) return bCheck - aCheck; const ac=a.m.cap?1:0; const bc=b.m.cap?1:0; if(ac!==bc) return bc - ac; if(ac && bc){ const diff=mvv(b)-mvv(a); if(diff!==0) return diff; } const cA=clone(s); apply(cA,a.x,a.y,a.m); const cB=clone(s); apply(cB,b.x,b.y,b.m); const mobA=allLegal(cA,color).length; const mobB=allLegal(cB,color).length; return mobB - mobA; }); }
+function orderTal(ms,s,color){
+  // Priorizar cheques, capturas, killers e histórico; depois MVV-LVA, segurança e mobilidade
+  function mvv(mv){
+    const victim = s[mv.m.y][mv.m.x];
+    const attacker = s[mv.y][mv.x];
+    const vv = victim ? valMap[victim.t] : 0;
+    const av = attacker ? valMap[attacker.t] : 0;
+    return vv - av;
+  }
+  return ms.slice().sort((a,b)=>{
+    const aCheck=givesCheckOn(s,a);
+    const bCheck=givesCheckOn(s,b);
+    if(aCheck!==bCheck) return bCheck - aCheck;
+    const ac=a.m.cap?1:0, bc=b.m.cap?1:0;
+    if(ac!==bc) return bc - ac;
+    // segurança do destino: evitar lances que deixam peça pendurada
+    const aUnsafe = isMoveUnsafe(s, a) ? 1 : 0;
+    const bUnsafe = isMoveUnsafe(s, b) ? 1 : 0;
+    if(aUnsafe!==bUnsafe) return aUnsafe - bUnsafe;
+    // MVV-LVA entre capturas
+    if(ac && bc){
+      const diff=mvv(b)-mvv(a);
+      if(diff!==0) return diff;
+    }
+    // mobilidade futura
+    const cA=clone(s); apply(cA,a.x,a.y,a.m);
+    const cB=clone(s); apply(cB,b.x,b.y,b.m);
+    const mobA=allLegal(cA,color).length;
+    const mobB=allLegal(cB,color).length;
+    return mobB - mobA;
+  });
+}
 
-function givesCheckOn(s,mv){ const c=clone(s); apply(c,mv.x,mv.y,mv.m); const mover=s[mv.y][mv.x]; if(!mover) return 0; const opp=mover.c==='black'?'white':'black'; return isCheck(c,opp)?1:0; }
-
-function qSearch(s,a,b,max){ let stand=evalAgg(s); if(max){ if(stand>=b) return stand; if(stand>a) a=stand; } else { if(stand<=a) return stand; if(stand<b) b=stand; } const color=max?'black':'white'; const caps=allLegal(s,color).filter(mv=>!!mv.m.cap); if(caps.length===0) return stand; for(const mv of orderTal(caps,s,color)){ const c=clone(s); apply(c,mv.x,mv.y,mv.m); const score=qSearch(c,a,b,!max); if(max){ if(score>a) a=score; if(a>=b) return a; } else { if(score<b) b=score; if(b<=a) return b; } } return max? a : b; }
-
-function minimaxTal(s,d,a,b,max){ const color=max?'black':'white'; const ms=allLegal(s,color); if(d===0||ms.length===0){ if(ms.length===0) return {score:max?-99999:99999}; const qs=qSearch(s,a,b,max); return {score:qs}; } let best=null; if(max){ let me=-1e9; for(const mv of orderTal(ms,s,color)){ const c=clone(s); apply(c,mv.x,mv.y,mv.m); const opp='white'; const ext=isCheck(c,opp)?1:0; const r=minimaxTal(c,d-1+ext,a,b,false); if(r.score>me){ me=r.score; best=mv; } a=Math.max(a,me); if(b<=a) break; } return {score:me,best}; } else { let mi=1e9; for(const mv of orderTal(ms,s,color)){ const c=clone(s); apply(c,mv.x,mv.y,mv.m); const opp='black'; const ext=isCheck(c,opp)?1:0; const r=minimaxTal(c,d-1+ext,a,b,true); if(r.score<mi){ mi=r.score; best=mv; } b=Math.min(b,mi); if(b<=a) break; } return {score:mi,best}; } }
+function searchTalIterative(s, color, baseDepth){
+  // limpa heurísticas por pesquisa
+  for(let i=0;i<64;i++) killerMoves[i]=[null,null];
+  for(const k of Object.keys(historyScores)) delete historyScores[k];
+  let best=null;
+  for(let d=1; d<=baseDepth; d++){
+    const r = minimaxTal(s, d, -1e9, 1e9, (color==='black'), 0);
+    if(r && r.best) best = r.best;
+  }
+  return best;
+}
 
 onmessage = function(e){
   try{
@@ -99,7 +178,10 @@ onmessage = function(e){
     }else if(level==='dificil'){
       const depth = compDepth(s); const r=minimax(s,depth,-1e9,1e9,(color==='black')); if(r && r.best) mv=r.best;
     }else{
-      const pcs = s.flat().filter(Boolean).length; const depth = pcs<=10?6:(pcs<=18?5:4); const r=minimaxTal(s,depth,-1e9,1e9,(color==='black')); if(r && r.best) mv=r.best;
+      const pcs = s.flat().filter(Boolean).length;
+      const depth = pcs<=10?6:(pcs<=18?5:4);
+      const best = searchTalIterative(s, color, depth);
+      if(best) mv = best;
     }
     if(mv) postMessage({ x: mv.x, y: mv.y, m: mv.m }); else postMessage({ move: null });
   }catch(_){ postMessage({ move: null }); }
