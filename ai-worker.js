@@ -8,6 +8,8 @@ function timeUp(){ return deadlineMs>0 && Date.now()>=deadlineMs; }
 // Endgame tuning constants
 const CHECK_BONUS = 50;
 const MATE_THREAT_BONUS = 40;
+// Troca posicional: margem mínima para aceitar captura (centipawns)
+const POS_TRADE_MARGIN = 35;
 
 function inB(x,y){ return x>=0 && x<8 && y>=0 && y<8; }
 function clone(s){ return s.map(r=>r.map(c=> c ? {t:c.t,c:c.c,m:!!c.m} : null)); }
@@ -196,6 +198,33 @@ function isMoveUnsafeGlobal(s, mv){
   return minAtt <= myVal; // SEE simplificado: pior atacante não é mais caro que a peça movida
 }
 
+// Avaliação simplificada de troca: retorna true se a captura tende a ser desfavorável
+function isBadTradeMove(s, mv){
+  try{
+    if(!mv || !mv.m || !mv.m.cap) return false;
+    const valMap={P:100,N:320,B:330,R:510,Q:900,K:10000};
+    const mover = s[mv.y] && s[mv.y][mv.x]; if(!mover) return false;
+    const victim = s[mv.m.y] && s[mv.m.x];
+    const myVal = valMap[mover.t]||0;
+    const victimVal = victim ? (valMap[victim.t]||0) : 0;
+    const c=clone(s); apply(c, mv.x, mv.y, mv.m);
+    const my = mover.c; const opp = my==='black'?'white':'black';
+    const att = countAttackers(c, opp, mv.m.x, mv.m.y);
+    const def = countDefenders(c, my, mv.m.x, mv.m.y);
+    // SEE aproximado
+    let net = victimVal - myVal;
+    if(att.count>0 && def.count===0){
+      net -= Math.min(myVal, att.minVal || myVal) * 0.8 + 40;
+    } else if(att.count>0 && def.count>0 && (att.minVal||0) <= myVal){
+      net -= (myVal - (att.minVal||0)) * 0.4 + 30;
+    }
+    // Margem dinâmica: ser mais rigoroso com a rainha
+    const extraMargin = (mover.t==='Q') ? 400 : 0;
+    const tradeMargin = POS_TRADE_MARGIN + extraMargin;
+    return net < tradeMargin;
+  }catch(_){ return false; }
+}
+
 // Heurística: um sacrifício só é aceitável se criar ameaça concreta de mate
 function isMateThreatSacrifice(s, mv, color){
   const c = clone(s); apply(c, mv.x, mv.y, mv.m);
@@ -221,6 +250,27 @@ function isMateThreatSacrifice(s, mv, color){
     if(before - after >= 2) return true;
   }
   return false;
+}
+
+// Versão mais rígida para a rainha: só aceita se a mobilidade do oponente
+// for muito baixa OU se houver redução forte das casas seguras do rei
+// juntamente com múltiplos atacantes nossos sobre o rei
+function isMateThreatSacrificeQueen(s, mv, color){
+  const c = clone(s); apply(c, mv.x, mv.y, mv.m);
+  const opp = color==='black' ? 'white' : 'black';
+  const isChk = isCheck(c, opp);
+  if(!isChk) return false;
+  const oppMoves = allLegal(c, opp).length;
+  let kx=-1, ky=-1, bkx=-1, bky=-1;
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){ const p=c[y][x]; if(p&&p.c===opp&&p.t==='K'){ kx=x; ky=y; break; } }
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){ const p=s[y][x]; if(p&&p.c===opp&&p.t==='K'){ bkx=x; bky=y; break; } }
+  const dirs=[[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]];
+  const safeCount=(board,KX,KY,def)=>{ let safe=0; for(const [dx,dy] of dirs){ const nx=KX+dx, ny=KY+dy; if(nx<0||nx>7||ny<0||ny>7) continue; const occ=board[ny][nx]; if(occ && occ.c===def) continue; if(!attacked(board, def, nx, ny)) safe++; } return safe; };
+  const before = (bkx>=0) ? safeCount(s, bkx, bky, opp) : 8;
+  const after = (kx>=0) ? safeCount(c, kx, ky, opp) : 8;
+  const myAttackersOnKing = (kx>=0 && ky>=0) ? countAttackers(c, color, kx, ky).count : 0;
+  if(oppMoves <= 2) return true;
+  return ((before - after) >= 3) && (myAttackersOnKing >= 2);
 }
 
 // Logs do Tal no worker (não bloqueia, apenas informa se o frontend escutar)
@@ -324,7 +374,7 @@ function orderTal(ms, s, color){
   }
   // Heurística de escadinha: em KRRK, preferir lances de torre que alinham em arquivo/rank com rei adversário e reduzem casas seguras
   function ladderScore(mv){
-    if(!isKRRK || !oppK) return 0;
+    if(!oppK) return 0;
     const mover = s[mv.y][mv.x]; if(!mover || mover.t!=='R') return 0;
     const cBoard=clone(s); apply(cBoard,mv.x,mv.y,mv.m);
     const rx=mv.m.x, ry=mv.m.y;
@@ -332,14 +382,37 @@ function orderTal(ms, s, color){
     const sameRank = (ry===oppK.y);
     if(!sameFile && !sameRank) return 0;
     const dist = sameFile ? Math.abs(ry - oppK.y) : Math.abs(rx - oppK.x);
-    if(dist<=1) return 0; // evitar contato direto com rei
+    if(dist<=1) return 0; // manter distância do rei
+    // não subir lances "pendurados"
+    if(isMoveUnsafe(mv)) return 0;
     const safeAfter = safeAround(cBoard, oppK.x, oppK.y, opp);
     const reduction = baseSafe - safeAfter;
     if(reduction<=0) return 0;
     const givesChk = isCheck(cBoard, opp);
-    // prêmio maior se dá cheque e reduz espaço; menor se só reduz
-    return reduction*3 + (givesChk?2:0);
+    // escore base por reduzir casas seguras e/ou checar
+    let score = reduction*3 + (givesChk?2:0);
+    // bônus maior em KRRK puro; menor em finais gerais (pcs<=10) com peões
+    if(isKRRK) score += 3;
+    else if(pcsTotal<=10) score = Math.max(1, score - 2);
+    else score = 0;
+    return score;
   }
+  // Priorizar retirada de peças penduradas: mover peças atacadas sem defesa para casas seguras
+  function saveHangingScore(mv){
+    const mover = s[mv.y][mv.x]; if(!mover) return 0;
+    const my = mover.c; const opp = my==='black'?'white':'black';
+    // origem pendurada?
+    const def0 = countDefenders(s, my, mv.x, mv.y);
+    const att0 = countAttackers(s, opp, mv.x, mv.y);
+    if(!(att0.count>0 && def0.count===0)) return 0;
+    const c=clone(s); apply(c, mv.x, mv.y, mv.m);
+    const def1 = countDefenders(c, my, mv.m.x, mv.m.y);
+    const att1 = countAttackers(c, opp, mv.m.x, mv.m.y);
+    const safe = (att1.count===0) || (def1.count>0 && (att1.minVal||9999) > (valMap[mover.t]||0));
+    return safe ? 1 : 0;
+  }
+  // Troca desfavorável: captura sem ganho líquido suficiente
+  function isBadTradeLocal(mv){ return isBadTradeMove(s, mv); }
   // Anti-repetição: em finais (≤10 peças), despriorizar lances de rei que não trazem progresso
   function kingNoProgress(mv){
     if(pcsTotal>10 || !oppK) return false;
@@ -352,11 +425,32 @@ function orderTal(ms, s, color){
     // se não reduz casas seguras do rei adversário, é movimento passivo de rei
     return safeAfter >= baseSafe;
   }
+  
+  // Preferir o lance da PV (principal variation) armazenado na TT
+  const pvEntry = TT.get(posKey(s, color));
+  const pvBest = pvEntry && pvEntry.best ? pvEntry.best : null;
+  function isPV(mv){
+    return !!(pvBest && mv.x===pvBest.x && mv.y===pvBest.y && mv.m && pvBest.m && mv.m.x===pvBest.m.x && mv.m.y===pvBest.m.y);
+  }
+  
   return ms.slice().sort((a,b)=>{
+    // PV primeiro
+    const aPV = isPV(a) ? 1 : 0;
+    const bPV = isPV(b) ? 1 : 0;
+    if(aPV !== bPV) return bPV - aPV;
+    
     // Primeiro: evitar lances inseguros (não sacrificar peças valiosas só para checar)
     const aUnsafe = isMoveUnsafe(a)?1:0;
     const bUnsafe = isMoveUnsafe(b)?1:0;
     if(aUnsafe!==bUnsafe) return aUnsafe - bUnsafe;
+    // Salvar peças penduradas tem prioridade
+    const aSave = saveHangingScore(a)?1:0;
+    const bSave = saveHangingScore(b)?1:0;
+    if(aSave!==bSave) return bSave - aSave;
+    // Rebaixar trocas desfavoráveis ANTES dos cheques
+    const aBad = isBadTradeLocal(a)?1:0;
+    const bBad = isBadTradeLocal(b)?1:0;
+    if(aBad!==bBad) return aBad - bBad;
     const aCheck=givesCheckOn(s,a);
     const bCheck=givesCheckOn(s,b);
     if(aCheck!==bCheck) return bCheck - aCheck; // cheques primeiro
@@ -422,6 +516,20 @@ function minimaxTal(s, d, a, b, max, ply=0){
     else if(tt.flag==='UPPER') b = Math.min(b, tt.score);
     if(a>=b) return { score: tt.score, best: tt.best };
   }
+  
+  // Null-move pruning: quando não está em cheque, tenta passar a vez para podar
+  if(d >= 3 && !isCheck(s, color) && ply < 60){
+    const prevEnp = enp;
+    enp = null; // evitar en passant fantasmas durante null move
+    const r = minimaxTal(s, d - 2, a, b, !max, ply + 1);
+    enp = prevEnp;
+    if(max){
+      if(r.score >= b) return { score: r.score };
+    }else{
+      if(r.score <= a) return { score: r.score };
+    }
+  }
+  
   const ms = allLegal(s, color);
   if(ms.length===0){
     const losing = isCheck(s, color);
@@ -441,6 +549,13 @@ function minimaxTal(s, d, a, b, max, ply=0){
       const isChk = isCheck(c, opp);
       const isCap = !!mv.m.cap;
       const mover = s[mv.y][mv.x];
+      // Guarda extra: evitar entregar a rainha mesmo com cheque, sem ameaça clara de mate (versão rígida)
+      if(isCap && isChk && mover && mover.t==='Q' && isBadTradeMove(s, mv) && !isMateThreatSacrificeQueen(s, mv, color)){
+        logTalW('Troca ruim com cheque (rainha) evitada', { piece: 'Q', from: {x: mv.x, y: mv.y}, to: {x: mv.m.x, y: mv.m.y} });
+        moveIndex++; continue;
+      }
+      // Evitar troca desfavorável sem cheque
+      if(isCap && !isChk && isBadTradeMove(s, mv)){ logTalW('Troca desfavorável evitada', { piece: mover && mover.t, from: {x: mv.x, y: mv.y}, to: {x: mv.m.x, y: mv.m.y} }); moveIndex++; continue; }
       // Bloquear capivaradas: lances inseguros que não criam ameaça de mate
       const unsafe = isMoveUnsafeGlobal(s, mv);
       const mateSac = isMateThreatSacrifice(s, mv, color);
@@ -479,6 +594,13 @@ function minimaxTal(s, d, a, b, max, ply=0){
       const isChk = isCheck(c, opp);
       const isCap = !!mv.m.cap;
       const mover = s[mv.y][mv.x];
+      // Guarda extra: evitar entregar a rainha mesmo com cheque, sem ameaça clara de mate (versão rígida)
+      if(isCap && isChk && mover && mover.t==='Q' && isBadTradeMove(s, mv) && !isMateThreatSacrificeQueen(s, mv, color)){
+        logTalW('Troca ruim com cheque (rainha) evitada', { piece: 'Q', from: {x: mv.x, y: mv.y}, to: {x: mv.m.x, y: mv.m.y} });
+        moveIndex++; continue;
+      }
+      // Evitar troca desfavorável sem cheque
+      if(isCap && !isChk && isBadTradeMove(s, mv)){ logTalW('Troca desfavorável evitada', { piece: mover && mover.t, from: {x: mv.x, y: mv.y}, to: {x: mv.m.x, y: mv.m.y} }); moveIndex++; continue; }
       // Bloquear capivaradas: lances inseguros que não criam ameaça de mate
       const unsafe = isMoveUnsafeGlobal(s, mv);
       const mateSac = isMateThreatSacrifice(s, mv, color);
@@ -650,7 +772,18 @@ async function fetchTablebaseMove(s, color){
       const uci = m && m.uci;
       if(!uci) continue;
       const pm = findLegalMoveByUCI(s, color, uci);
-      if(pm) return pm;
+      if(pm){
+        // Filtro: não aceitar lances de rainha que dão cheque mas configuram troca ruim sem ameaça real
+        try{
+          const mover = s[pm.y] && s[pm.y][pm.x];
+          const cTry = clone(s); apply(cTry, pm.x, pm.y, pm.m);
+          const isChk = isCheck(cTry, color==='black' ? 'white' : 'black');
+          if(mover && mover.t==='Q' && isChk && isBadTradeMove(s, pm) && !isMateThreatSacrificeQueen(s, pm, color)){
+            continue; // pular esta sugestão do book
+          }
+        }catch(_){ /* ignore e aceita pm */ }
+        return pm;
+      }
     }
     return null;
   }catch(_){ return null; }

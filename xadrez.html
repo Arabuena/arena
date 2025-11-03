@@ -18,8 +18,103 @@ h1{text-align:center;margin:8px 0 12px;font-weight:600;font-size:clamp(20px,4.6v
 #ui button:hover{filter:brightness(1.08)}
 #ui button:active{transform:translateY(1px)}
 @media(max-width:600px){body{padding:12px}#ui{gap:10px}}
-</style></head><body><h1>Jogo de Xadrez</h1><div class="turn" id="turn"></div><div id="status" style="text-align:center;margin-bottom:6px"></div><div id="clocks" style="text-align:center;margin-bottom:6px">Brancas: <span id="clockW">--:--</span> • Pretas: <span id="clockB">--:--</span></div><div id="board"></div><div id="ui"><label>Modo:<select id="mode"><option value="pvp">Jogador vs Jogador</option><option value="ai">Jogador vs IA</option><option value="ava">IA vs IA</option></select></label><label>Nível:<select id="level"><option value="facil">Fácil</option><option value="medio">Médio</option><option value="dificil">Difícil</option><option value="tal">Muito Difícil (Tal)</option></select></label><label id="aiWhiteLabel" style="display:none">IA Brancas:<select id="aiWhiteName" style="display:none"></select></label><label id="aiBlackLabel" style="display:none">IA Pretas:<select id="aiBlackName" style="display:none"></select></label><label>Tempo:<select id="time"><option value="classica">Clássica (60:00)</option><option value="rapida">Rápida (15:00)</option><option value="blitz" selected>Blitz (5:00)</option><option value="bullet">Bullet (1:00)</option></select></label><label>Som:<input id="snd" type="checkbox" checked></label><label>Volume:<input id="vol" type="range" min="0" max="100" value="100"></label><button id="reset">Reiniciar</button><button id="draw">Empatar</button><button id="resign">Desistir</button><button id="startAva" style="display:none">Iniciar</button></div><div id="aiScore" style="text-align:center;margin-top:8px"></div><script>const U={white:{K:"\u2654",Q:"\u2655",R:"\u2656",B:"\u2657",N:"\u2658",P:"\u2659"},black:{K:"\u265A",Q:"\u265B",R:"\u265C",B:"\u265D",N:"\u265E",P:"\u265F"}};let g,turn,sel=null,opts=[],mode='ai',level='medio';const bd=document.getElementById('board');
+</style></head><body><h1>Jogo de Xadrez</h1><div class="turn" id="turn"></div><div id="status" style="text-align:center;margin-bottom:6px"></div><div id="clocks" style="text-align:center;margin-bottom:6px">Brancas: <span id="clockW">--:--</span> • Pretas: <span id="clockB">--:--</span></div><div id="board"></div><div id="ui"><label>Modo:<select id="mode"><option value="pvp">Jogador vs Jogador</option><option value="ai">Jogador vs IA</option><option value="ava">IA vs IA</option></select></label><label>Nível:<select id="level"><option value="facil">Fácil</option><option value="medio">Médio</option><option value="dificil">Difícil</option><option value="tal">Muito Difícil (Tal)</option></select></label><label>Motor:<select id="engine"><option value="tal" selected>Tal</option><option value="stockfish">Stockfish</option></select></label><label id="aiWhiteLabel" style="display:none">IA Brancas:<select id="aiWhiteName" style="display:none"></select></label><label id="aiBlackLabel" style="display:none">IA Pretas:<select id="aiBlackName" style="display:none"></select></label><label>Tempo:<select id="time"><option value="classica">Clássica (60:00)</option><option value="rapida">Rápida (15:00)</option><option value="blitz" selected>Blitz (5:00)</option><option value="bullet">Bullet (1:00)</option></select></label><label>Som:<input id="snd" type="checkbox" checked></label><label>Volume:<input id="vol" type="range" min="0" max="100" value="100"></label><button id="reset">Reiniciar</button><button id="draw">Empatar</button><button id="resign">Desistir</button><button id="startAva" style="display:none">Iniciar</button></div><div id="aiScore" style="text-align:center;margin-top:8px"></div><script>const U={white:{K:"\u2654",Q:"\u2655",R:"\u2656",B:"\u2657",N:"\u2658",P:"\u2659"},black:{K:"\u265A",Q:"\u265B",R:"\u265C",B:"\u265D",N:"\u265E",P:"\u265F"}};let g,turn,sel=null,opts=[],mode='ai',level='medio';const bd=document.getElementById('board');
 let aiWorker=null;
+// Cache dedicado por motor
+let talWorker=null, sfWorker=null;
+// Flag para evitar reentrância na IA
+let aiThinking = false;
+// Tempo de cálculo por lado para Stockfish
+window.sfTimeMsWhite = window.sfTimeMsWhite || 8000;
+window.sfTimeMsBlack = window.sfTimeMsBlack || 8000;
+// Caminho configurável para o arquivo WASM do Stockfish (usado pelo worker)
+window.sfWasmFile = window.sfWasmFile || 'stockfish-17.1-lite-single-03e3232.wasm';
+ window.sfWasmOrigin = window.sfWasmOrigin || (location && location.origin ? location.origin : '');
+ // Nome correto do arquivo WASM presente na raiz do projeto
+ window.sfWasmFile = window.sfWasmFile || 'stockfish-17.1-lite-single-03e3232.wasm';
+// Criação robusta de Web Worker com fallbacks
+async function ensureAIWorker(){
+  if(aiWorker) return aiWorker;
+  // Tentativa padrão
+  try{ aiWorker = new Worker('ai-worker.js'); return aiWorker; }catch(_){ aiWorker=null; }
+  // Fallback: Blob com importScripts (funciona em HTTP mesmo que o arquivo esteja separado)
+  try{
+    const blob = new Blob(["importScripts('ai-worker.js');"], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    aiWorker = new Worker(url);
+    return aiWorker;
+  }catch(_){ aiWorker=null; }
+  // Fallback: incorporar código via fetch e criar Blob
+  try{
+    const res = await fetch('ai-worker.js');
+    if(res && res.ok){
+      const txt = await res.text();
+      const blob = new Blob([txt], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      aiWorker = new Worker(url);
+      return aiWorker;
+    }
+  }catch(_){ aiWorker=null; }
+  return null;
+}
+
+async function ensureSfWorker(){
+  if(sfWorker) return sfWorker;
+  
+  // Verificar se stockfish.js existe
+  let stockfishExists = false;
+  let wasmExists = false;
+  try {
+    const testRes = await fetch('stockfish.js', {method: 'HEAD'});
+    stockfishExists = testRes.ok;
+  } catch(_) { /* silencioso */ }
+  try {
+    const wasmPath = (window.sfWasmFile || 'stockfish.wasm');
+    const testWasm = await fetch(wasmPath, {method: 'HEAD'});
+    wasmExists = testWasm.ok;
+    if (!wasmExists) {
+      console.error('Stockfish WASM não acessível:', (location && location.origin ? location.origin + '/' + wasmPath : wasmPath));
+    }
+  } catch(e) {
+    console.error('Falha ao verificar WASM:', e);
+    wasmExists = false;
+  }
+  
+  if (!stockfishExists || !wasmExists) {
+    console.warn('Stockfish não encontrado ou WASM inacessível. Verifique stockfish.js e', window.sfWasmFile);
+    alert('Stockfish não encontrado. O motor Tal será usado como fallback.');
+    return null;
+  }
+  
+  // Criar via URL absoluta e enviar configuração ao worker
+  try{
+    const wasmFile = String(window.sfWasmFile || 'stockfish-17.1-lite-single-03e3232.wasm');
+    const wasmOrigin = String(window.sfWasmOrigin || (location && location.origin ? location.origin : ''));
+    const sfWorkerAbs = (location && location.origin ? location.origin.replace(/\/$/, '') + '/sf-worker.js' : 'sf-worker.js');
+    sfWorker = new Worker(sfWorkerAbs);
+    try { sfWorker.postMessage({ __cfg: { sfWasmFile: wasmFile, sfWasmOrigin: wasmOrigin } }); } catch(_){}
+    return sfWorker;
+  }catch(_){ sfWorker=null; }
+  // Fallback direto
+  try{ sfWorker = new Worker('sf-worker.js'); return sfWorker; }catch(_){ sfWorker=null; }
+  try{
+    const blob = new Blob(["importScripts('sf-worker.js');"], { type: 'application/javascript' });
+    const url = URL.createObjectURL(blob);
+    sfWorker = new Worker(url);
+    return sfWorker;
+  }catch(_){ sfWorker=null; }
+  try{
+    const res = await fetch('sf-worker.js');
+    if(res && res.ok){
+      const txt = await res.text();
+      const blob = new Blob([txt], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      sfWorker = new Worker(url);
+      return sfWorker;
+    }
+  }catch(_){ sfWorker=null; }
+  return null;
+}
 // Perfis de IA e placar persistente
 const aiProfiles={"Arara (Médio)":"medio","Onça (Difícil)":"dificil","Tucano (Fácil)":"facil","Tal (Agressivo)":"tal"};
 let aiWhiteName='Arara (Médio)', aiBlackName='Onça (Difícil)';
@@ -31,8 +126,123 @@ const aiWhiteNameSelect=document.getElementById('aiWhiteName');const aiBlackName
 const startAvaBtn=document.getElementById('startAva');
 function populateAISelects(){ if(!aiWhiteNameSelect||!aiBlackNameSelect) return; const names=Object.keys(aiProfiles); aiWhiteNameSelect.innerHTML=''; aiBlackNameSelect.innerHTML=''; names.forEach(n=>{ const o1=document.createElement('option'); o1.value=n; o1.textContent=n; aiWhiteNameSelect.appendChild(o1); const o2=document.createElement('option'); o2.value=n; o2.textContent=n; aiBlackNameSelect.appendChild(o2); }); aiWhiteNameSelect.value=aiWhiteName; aiBlackNameSelect.value=aiBlackName; aiWhiteNameSelect.onchange=()=>{ aiWhiteName=aiWhiteNameSelect.value; renderScore(); }; aiBlackNameSelect.onchange=()=>{ aiBlackName=aiBlackNameSelect.value; renderScore(); }; }
 function toggleAIFields(){ try{ const levelEl=document.getElementById('level'); const levelLabel=levelEl?levelEl.parentElement:null; if(mode==='ava'){ if(levelLabel) levelLabel.style.display='none'; if(aiWhiteLabel) aiWhiteLabel.style.display='flex'; if(aiBlackLabel) aiBlackLabel.style.display='flex'; if(aiWhiteNameSelect) aiWhiteNameSelect.style.display='inline'; if(aiBlackNameSelect) aiBlackNameSelect.style.display='inline'; if(startAvaBtn) startAvaBtn.style.display='inline'; } else { if(levelLabel) levelLabel.style.display='flex'; if(aiWhiteLabel) aiWhiteLabel.style.display='none'; if(aiBlackLabel) aiBlackLabel.style.display='none'; if(aiWhiteNameSelect) aiWhiteNameSelect.style.display='none'; if(aiBlackNameSelect) aiBlackNameSelect.style.display='none'; if(startAvaBtn) startAvaBtn.style.display='none'; } }catch(_){} }
+
+// Exibir seletores de motor quando houver IA
+(function(){
+  const ui=document.getElementById('ui'); if(!ui) return;
+  // Brancas
+  if(!document.getElementById('engineWhiteLabel')){
+    const lab=document.createElement('label'); lab.id='engineWhiteLabel'; lab.style.display='none';
+    lab.append(document.createTextNode('Motor Brancas: '));
+    const sel=document.createElement('select'); sel.id='engineWhite';
+    ['tal','stockfish'].forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=(v==='tal'?'Tal':'Stockfish'); sel.appendChild(o); });
+    sel.value = window.engineWhite || 'tal';
+    sel.onchange = ()=>{ window.engineWhite = sel.value; };
+    lab.appendChild(sel); ui.appendChild(lab);
+  }
+  // Pretas
+  if(!document.getElementById('engineBlackLabel')){
+    const lab=document.createElement('label'); lab.id='engineBlackLabel'; lab.style.display='none';
+    lab.append(document.createTextNode('Motor Pretas: '));
+    const sel=document.createElement('select'); sel.id='engineBlack';
+    ['tal','stockfish'].forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=(v==='tal'?'Tal':'Stockfish'); sel.appendChild(o); });
+    sel.value = window.engineBlack || 'tal';
+    sel.onchange = ()=>{ window.engineBlack = sel.value; };
+    lab.appendChild(sel); ui.appendChild(lab);
+  }
+  function syncEngineSelectors(){
+    const wLab=document.getElementById('engineWhiteLabel');
+    const bLab=document.getElementById('engineBlackLabel');
+    const wTimeLab=document.getElementById('sfTimeWhiteLabel');
+    const bTimeLab=document.getElementById('sfTimeBlackLabel');
+    const show = (mode==='ai' || mode==='ava');
+    if(wLab) wLab.style.display = show ? 'flex' : 'none';
+    if(bLab) bLab.style.display = show ? 'flex' : 'none';
+    
+    // Mostrar controles de tempo apenas quando Stockfish estiver selecionado
+    const wEngine = document.getElementById('engineWhite');
+    const bEngine = document.getElementById('engineBlack');
+    if(wTimeLab) wTimeLab.style.display = (show && wEngine && wEngine.value === 'stockfish') ? 'flex' : 'none';
+    if(bTimeLab) bTimeLab.style.display = (show && bEngine && bEngine.value === 'stockfish') ? 'flex' : 'none';
+  }
+  // inicial e nos eventos
+  syncEngineSelectors();
+  const modeEl=document.getElementById('mode');
+  if(modeEl){ modeEl.addEventListener('change', syncEngineSelectors); }
+  
+  // Atualizar visibilidade dos controles de tempo quando o motor muda
+  const wEngine = document.getElementById('engineWhite');
+  const bEngine = document.getElementById('engineBlack');
+  if(wEngine) wEngine.addEventListener('change', syncEngineSelectors);
+  if(bEngine) bEngine.addEventListener('change', syncEngineSelectors);
+})();
+// Estado global de motor por lado
+window.engineWhite = window.engineWhite || 'tal';
+window.engineBlack = window.engineBlack || 'tal';
 document.getElementById('mode').onchange=e=>{ mode=e.target.value; toggleAIFields(); };
+
+// Adicionar controles de tempo para Stockfish
+(function(){
+  const ui=document.getElementById('ui');
+  if(ui && !document.getElementById('sfTimeWhiteLabel')){
+    const lab=document.createElement('label'); lab.id='sfTimeWhiteLabel'; lab.style.display='none';
+    lab.append(document.createTextNode('Tempo SF Brancas: '));
+    const sel=document.createElement('select'); sel.id='sfTimeWhite';
+    [500, 1000, 2000, 3000, 5000].forEach(v=>{ 
+      const o=document.createElement('option'); 
+      o.value=v; 
+      o.textContent=`${v/1000}s`; 
+      sel.appendChild(o); 
+    });
+    sel.value = window.sfTimeMsWhite || 8000;
+sel.onchange = ()=>{ window.sfTimeMsWhite = parseInt(sel.value); };
+    lab.appendChild(sel); ui.appendChild(lab);
+  }
+  if(ui && !document.getElementById('sfTimeBlackLabel')){
+    const lab=document.createElement('label'); lab.id='sfTimeBlackLabel'; lab.style.display='none';
+    lab.append(document.createTextNode('Tempo SF Pretas: '));
+    const sel=document.createElement('select'); sel.id='sfTimeBlack';
+    [500, 1000, 2000, 3000, 5000].forEach(v=>{ 
+      const o=document.createElement('option'); 
+      o.value=v; 
+      o.textContent=`${v/1000}s`; 
+      sel.appendChild(o); 
+    });
+    sel.value = window.sfTimeMsBlack || 8000;
+sel.onchange = ()=>{ window.sfTimeMsBlack = parseInt(sel.value); };
+    lab.appendChild(sel); ui.appendChild(lab);
+  }
+  
+  // Sincronizar visibilidade dos controles de tempo
+  function syncSfTime(){
+    const showWhite = (mode!=='pvp') && (window.engineWhite==='stockfish');
+    const showBlack = (mode!=='pvp') && (window.engineBlack==='stockfish');
+    const wLab=document.getElementById('sfTimeWhiteLabel');
+    const bLab=document.getElementById('sfTimeBlackLabel');
+    if(wLab) wLab.style.display = showWhite ? 'flex' : 'none';
+    if(bLab) bLab.style.display = showBlack ? 'flex' : 'none';
+  }
+  syncSfTime();
+  const ew=document.getElementById('engineWhite');
+  const eb=document.getElementById('engineBlack');
+  if(ew) ew.addEventListener('change', syncSfTime);
+  if(eb) eb.addEventListener('change', syncSfTime);
+})();
 document.getElementById('level').onchange=e=>{ level=e.target.value };
+// Seletor de motor (Tal ou Stockfish)
+const engineSel=document.getElementById('engine');
+if(engineSel){
+  window.engine = engineSel.value || 'tal';
+  // Estado global de motor por lado
+  window.engineWhite = window.engineWhite || 'tal';
+  window.engineBlack = window.engineBlack || 'tal';
+  engineSel.onchange = e => { 
+    window.engine = e.target.value || 'tal'; 
+    // Atualiza ambos os motores quando o seletor principal muda
+    window.engineWhite = window.engine;
+    window.engineBlack = window.engine;
+  };
+}
 document.getElementById('reset').onclick=()=>{ init(); if(mode!=='ava'){ try{ startClock(); switchClock(); }catch(_){} } };
 if(startAvaBtn){ startAvaBtn.onclick=()=>{ if(mode==='ava'){ init(); updateStatus(); try{ startClock(); switchClock(); }catch(_){} setTimeout(()=>{ try{ runAI(); }catch(_){} }, thinkDelay()); } }; }
 populateAISelects(); toggleAIFields(); renderScore();
@@ -157,7 +367,7 @@ function timeOver(color){
   const winner = (color==='white') ? 'Pretas vencem por tempo' : 'Brancas vencem por tempo';
   endGame('Tempo esgotado! '+winner);
 }
-function init(){enp=null;halfmoveClock=0;posCounts={};drawOffer=null;moveHistory=[];fullmoveNumber=1;gameResult='*';g=[...Array(8)].map(_=>Array(8).fill(null));turn='white';// peças
+function init(){enp=null;halfmoveClock=0;posCounts={};drawOffer=null;moveHistory=[];fullmoveNumber=1;gameResult='*';lastAISrc=null;g=[...Array(8)].map(_=>Array(8).fill(null));turn='white';// peças
 for(let x=0;x<8;x++){g[1][x]={t:'P',c:'white',m:false};g[6][x]={t:'P',c:'black',m:false} }
 [['R','N','B','Q','K','B','N','R']].forEach(arr=>{for(let x=0;x<8;x++)g[0][x]={t:arr[x],c:'white',m:false};for(let x=0;x<8;x++)g[7][x]={t:arr[x],c:'black',m:false} });render();updTurn();initClock();recordPosition();syncDrawButtons();renderMoves();
 }
@@ -343,19 +553,32 @@ function updateStatus(){
   // limpar destaques anteriores
   if(typeof bd!=='undefined' && bd && bd.children){for(let i=0;i<bd.children.length;i++){bd.children[i].style.outline='';bd.children[i].style.boxShadow='';}}
   const s=clone(g);
+  
+  // Indicador do motor que jogou o último lance
+  let engineInfo = '';
+  if(window.lastAISrc && window.lastAISrc !== null) {
+    const engineName = window.lastAISrc === 'stockfish' ? '🤖 Stockfish' : 
+                      window.lastAISrc === 'tal' ? '🧠 Tal' : 
+                      window.lastAISrc === 'med' ? '🎯 IA Médio' : 
+                      window.lastAISrc === 'easy' ? '🎲 IA Fácil' : 
+                      `🔧 ${window.lastAISrc}`;
+    const prevColor = turn === 'white' ? 'Pretas' : 'Brancas';
+    engineInfo = ` • Último lance: ${prevColor} (${engineName})`;
+  }
+  
   if(isCheck(s,color)){
-    el.textContent='Xeque ao '+(color==='white'?'Branco':'Preto')+'!';
+    el.textContent='Xeque ao '+(color==='white'?'Branco':'Preto')+'!' + engineInfo;
     playSound('chk');
     // destacar rei em xeque
     let kx=-1,ky=-1;for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(p&&p.c===color&&p.t==='K'){kx=x;ky=y}}
     if(kx>=0&&ky>=0&&bd){const elK=bd.querySelector('.sq[data-x="'+kx+'"][data-y="'+ky+'"]');if(elK){elK.style.outline='3px solid #ef4444';elK.style.boxShadow='0 0 6px #ef4444';}}
   }else{
-     el.textContent='';
+     el.textContent = engineInfo;
    }
    // Exibir oferta de empate se houver e não estiver em xeque
    if(drawOffer && !isCheck(s,color)){
      const side = drawOffer==='white' ? 'Brancas' : 'Pretas';
-     el.textContent = side + ' oferecem empate';
+     el.textContent = side + ' oferecem empate' + engineInfo;
    }
    syncDrawButtons();
    // Cheque-mate / afogamento
@@ -455,7 +678,7 @@ function execMove(x,y,m){
         if(sc<=-50){ playSound('draw'); endGame('Empate aceito'); drawOffer=null; return; }
         else { drawOffer=null; updateStatus(); syncDrawButtons(); }
       }
-      if(gameResult==='*'){ runAI(); updateStatus(); }
+      if(gameResult==='*' && !aiThinking){ runAI(); updateStatus(); }
     }, thinkDelay());
   }
 }
@@ -470,23 +693,86 @@ function doMove(x,y,m){
 }
 
 function levelFor(color){ if(mode==='ava'){ const name=(color==='white'?aiWhiteName:aiBlackName); return aiProfiles[name]||'medio'; } return level; }
-function ai(color){ const lvl=levelFor(color); if(lvl==='facil')return aiEasy(color); if(lvl==='medio')return aiMed(color); if(lvl==='dificil')return aiHard(color); return aiTal(color); }
-function runAI(){
+function ai(color){ 
+  const lvl=levelFor(color); 
+  // Nunca usar Tal ou Hard no thread principal
+  if(lvl==='facil') return aiEasy(color); 
+  return aiMed(color); 
+}
+async function runAI(){
+  // Evitar reentrância - não iniciar nova análise se já estiver pensando
+  if(aiThinking) return;
+  
   try{
+    aiThinking = true;
     const beforeTurn=turn;
     const lvl = levelFor(beforeTurn);
-    if(!aiWorker){ try{ aiWorker = new Worker('ai-worker.js'); }catch(e){ aiWorker=null; } }
-    if(aiWorker){
+    
+    // Motor por lado
+    window.engineWhite = window.engineWhite || 'tal';
+    window.engineBlack = window.engineBlack || 'tal';
+    const engine = (beforeTurn === 'white') ? window.engineWhite : window.engineBlack;
+    
+    // Seleciona worker
+    let worker = null;
+    if (engine === 'stockfish') {
+      try { worker = await (typeof ensureSfWorker==='function' ? ensureSfWorker() : new Worker('sf-worker.js')); } catch(_){ worker=null; }
+    } else {
+      worker = await ensureAIWorker();
+    }
+    
+    if(worker){
+      aiWorker = worker;
       let resolved=false;
       const onMsg=(ev)=>{
         resolved=true;
         try{ aiWorker.removeEventListener('message', onMsg); }catch(_){}
-        if(turn!==beforeTurn) return;
-        if(gameResult && gameResult!=='*') return;
+        if(turn!==beforeTurn){ aiThinking=false; return; }
+        if(gameResult && gameResult!=='*'){ aiThinking=false; return; }
         const d=ev.data||{};
+        
+        // Fallback explícito se o Stockfish falhar
+        if (d.error) {
+          console.warn('Motor falhou:', d.error, d.detail||'', d.wasm||'');
+          lastAISrc = null;
+          try { 
+            // Nunca usar Tal no thread principal
+            (lvl==='tal' ? aiMed : aiEasy)(beforeTurn);
+          } catch(_){}
+          aiThinking=false;
+          updateStatus();
+          return;
+        }
+        
+        // Suporte UCI (Stockfish)
+        if (d.uci) {
+          try {
+            const from = d.uci.substring(0,2), to = d.uci.substring(2,4);
+            const promotion = d.uci.length>4 ? d.uci.substring(4,5).toUpperCase() : null;
+            const fromX = from.charCodeAt(0) - 97, fromY = parseInt(from[1]) - 1;
+            const toX = to.charCodeAt(0) - 97, toY = parseInt(to[1]) - 1;
+            if (fromX>=0 && fromX<8 && fromY>=0 && fromY<8) {
+              const piece = g[fromY][fromX];
+              if (piece && piece.c === beforeTurn) {
+                const legals = legalOn(g, fromX, fromY) || [];
+                const matched = legals.find(m => m.x===toX && m.y===toY);
+                if (matched) {
+                  if (promotion) matched.promote = promotion;
+                  lastAISrc = 'stockfish';
+                  doMove(fromX, fromY, matched);
+                  updateStatus();
+                  aiThinking = false;
+                  return;
+                }
+              }
+            }
+          } catch(_){}
+        }
+        
+        // Mensagens do Tal
         if(d.src){ console.info('Tal origem:', d.src); }
-        // guarda origem do lance para UI
-        lastAISrc = d.src || null;
+        lastAISrc = d.src || engine || null;
+        
         if(typeof d.x==='number' && typeof d.y==='number' && d.m){
           // Validar jogada enviada pelo worker contra o estado atual
           const inBounds = (d.x>=0 && d.x<8 && d.y>=0 && d.y<8);
@@ -506,21 +792,22 @@ function runAI(){
               } else { 
                 // jogada inválida: limpar origem e fallback
                 lastAISrc = null;
-                try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(__){} 
+                try{ aiEasy(beforeTurn); }catch(__){} 
               }
             }catch(_){ 
               lastAISrc = null; // limpa origem se erro
-              try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(__){} 
+              try{ aiEasy(beforeTurn); }catch(__){} 
             }
           } else {
             lastAISrc = null; // limpa origem se peça inválida
-            try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(_){ /* fallback silencioso */ }
+            try{ aiEasy(beforeTurn); }catch(_){ /* fallback silencioso */ }
           }
         } else {
           lastAISrc = null; // limpa origem se dados inválidos
-          try{ (lvl==='tal' ? aiMed : aiEasy)(beforeTurn); }catch(_){}
+          try{ aiEasy(beforeTurn); }catch(_){}
         }
         updateStatus();
+        aiThinking = false;
       };
       aiWorker.addEventListener('message', onMsg);
       try{
@@ -539,23 +826,40 @@ function runAI(){
         seedTalBook(learn.book||(learn.book={})); saveTalLearn(learn);
         const fenNow = toFEN(g, beforeTurn);
         const personal = (learn && learn.book && learn.book[fenNow]) ? learn.book[fenNow] : null;
-        const payload={ g: JSON.parse(JSON.stringify(g)), color: beforeTurn, level: lvl, enp: enp, budgetMs: Math.max(600, thinkDelay()), learnBook: personal };
+        
+        // Tempo personalizado para Stockfish por lado
+    const budget = (engine==='stockfish')
+      ? Math.max(800, (beforeTurn === 'white' ? window.sfTimeMsWhite : window.sfTimeMsBlack))
+      : Math.max(600, thinkDelay());
+          
+        const payload={ g: JSON.parse(JSON.stringify(g)), color: beforeTurn, level: lvl, enp: enp, budgetMs: budget, learnBook: personal, engine: engine, fen: fenNow, movetimeMs: (engine==='stockfish') ? budget : undefined };
         aiWorker.postMessage(payload);
-      }catch(_){ /* fallback abaixo */ }
+      }catch(_){ 
+        // Libera a trava em caso de erro
+        aiThinking = false;
+      }
       setTimeout(()=>{ 
         if(!resolved && turn===beforeTurn && (gameResult==='*')){ 
-          try{ 
+          try{
             const lvlTimeout = levelFor(beforeTurn);
-            if(lvlTimeout==='tal') aiMed(beforeTurn); else aiEasy(beforeTurn); 
-          }catch(_){} 
+            if(lvlTimeout==='tal') aiMed(beforeTurn); else aiEasy(beforeTurn);
+          }catch(_){}
+          aiThinking=false;
           updateStatus(); 
         } 
-      }, Math.max(900, thinkDelay()+400));
+      }, Math.max(1200, thinkDelay()+600));
     } else {
-      ai(beforeTurn);
-      setTimeout(()=>{ if(turn===beforeTurn) { try{ aiEasy(beforeTurn); }catch(_){} } }, 1200);
+      // Sem worker: nunca rodar Tal no thread principal (congela)
+      try{ aiMed(beforeTurn); }catch(_){}
+      setTimeout(()=>{ 
+        aiThinking=false; 
+        if(turn===beforeTurn) { try{ aiEasy(beforeTurn); }catch(_){ /* silencioso */ } } 
+      }, 1200);
+      updateStatus();
     }
   }catch(e){
+    // Libera a trava em caso de erro
+    aiThinking = false;
     try{ aiEasy(turn); }catch(_){}
   }
 }
@@ -1092,11 +1396,12 @@ function insufficientMaterial(s){
   // qualquer peão, torre ou dama presentes -> não é material insuficiente
   if(w.q+w.r+w.p>0 || b.q+b.r+b.p>0) return false;
   const wMin = w.b + w.n; const bMin = b.b + b.n;
-  if(wMin===0 && bMin===0) return true; // K vs K
-  if(wMin<=1 && bMin===0) return true; // K+minor vs K
-  if(bMin<=1 && wMin===0) return true; // K vs K+minor
-  if(w.b===1 && b.b===1 && w.n===0 && b.n===0){ // K+B vs K+B (mesma cor)
-    const wColor = wbColors[0]; const bColor = bbColors[0]; if(typeof wColor!=='undefined' && typeof bColor!=='undefined' && wColor===bColor) return true;
+  if(wMin===0 && bMin===0) return true;           // K vs K
+  if(wMin<=1 && bMin===0) return true;            // K+minor vs K
+  if(bMin<=1 && wMin===0) return true;            // K vs K+minor
+  if(w.b===1 && b.b===1 && w.n===0 && b.n===0){   // K+B vs K+B (mesma cor)
+    const wColor = wbColors[0]; const bColor = bbColors[0];
+    if(typeof wColor!=='undefined' && typeof bColor!=='undefined' && wColor===bColor) return true;
   }
   if(w.n===1 && b.n===1 && w.b===0 && b.b===0) return true; // K+N vs K+N
   return false;
