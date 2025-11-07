@@ -1,0 +1,14 @@
+{
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1": {
+    "e2e4": 120,
+    "d2d4": 80,
+    "c2c4": 30,
+    "g1f3": 60
+  },
+  "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1": {
+    "e7e5": 110,
+    "c7c5": 100,
+    "d7d5": 70,
+    "g8f6": 50
+  }
+}

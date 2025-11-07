@@ -113,6 +113,13 @@ function evalAgg(s){
         score += (p.c==='black' ? -penalty : +penalty);
       }
     }
+    // Penalização explícita para dama pendurada (sem defesa)
+    if(p.t==='Q'){
+      if(att.count > 0 && def.count === 0){
+        const penalty = 450;
+        score += (p.c==='black' ? -penalty : +penalty);
+      }
+    }
   }
   // segurança do rei: bônus por colocar o rei adversário em xeque
   const inCheckWhite = isCheck(s,'white');
@@ -278,6 +285,66 @@ function logTalW(msg, data){
   try{ postMessage({ type: 'talDebug', msg, data }); }catch(_){ }
 }
 
+// Helpers táticos: valores, detectores de cheque e SEE simples pós-captura
+function pieceValue(t){ const VAL={P:100,N:320,B:330,R:510,Q:900,K:10000}; return VAL[t]||0; }
+function checkingPieces(s, color){
+  const opp = color==='black'?'white':'black';
+  let kx=-1,ky=-1;
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){ const p=s[y][x]; if(p&&p.c===color&&p.t==='K'){ kx=x; ky=y; break; } }
+  const attackers=[];
+  if(kx>=0){
+    for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+      const p=s[y][x]; if(!p||p.c!==opp) continue;
+      let at = [];
+      if(p.t==='P'){ at = pseudoOn(s,x,y).filter(m=>m.cap); }
+      else if(p.t==='K'){
+        for(const [dx,dy] of [[1,1],[1,-1],[-1,1],[-1,-1],[1,0],[-1,0],[0,1],[0,-1]]){ const nx=x+dx, ny=y+dy; if(inB(nx,ny)) at.push({x:nx,y:ny}); }
+      }else{
+        at = pseudoOn(s,x,y);
+      }
+      for(const m of at){ if(m.x===kx && m.y===ky){ attackers.push({x,y,t:p.t}); break; } }
+    }
+  }
+  return attackers;
+}
+function simpleSEEAfterCapture(s, mv, color){
+  const c=clone(s); apply(c,mv.x,mv.y,mv.m);
+  const opp = color==='black'?'white':'black';
+  const captured = s[mv.m.y] && s[mv.m.y][mv.m.x];
+  const gain = captured ? pieceValue(captured.t) : 0;
+  const rec = countAttackers(c, opp, mv.m.x, mv.m.y);
+  const recMin = (rec && typeof rec.minVal==='number') ? rec.minVal : 0;
+  return gain - recMin;
+}
+
+let localBook = null, bookReady = false;
+async function ensureLocalBook(){
+  if(bookReady) return;
+  try{
+    const res = await fetch('assets/opening-book.json', { method:'GET' });
+    if(res.ok){ localBook = await res.json(); }
+  }catch(_){ /* ignore */ }
+  bookReady = true;
+}
+function pickBookMoveFromJson(book, s, color){
+  if(!book) return null;
+  const fen = toFEN(s, color);
+  const entry = book[fen];
+  if(!entry || typeof entry!=='object') return null;
+  const moves = Object.entries(entry).filter(([uci])=> !!findLegalMoveByUCI(s, color, uci));
+  if(!moves.length) return null;
+  // Weighted random por frequência
+  const total = moves.reduce((acc, [,freq])=> acc + (Number(freq)||1), 0);
+  let r = Math.random() * total;
+  for(const [uci, freq] of moves){
+    r -= (Number(freq)||1);
+    if(r <= 0){
+      return findLegalMoveByUCI(s, color, uci);
+    }
+  }
+  return null;
+}
+
 // Worker message handler: recebe estado e retorna lance do Tal
 onmessage = async function(e){
   try{
@@ -286,9 +353,10 @@ onmessage = async function(e){
     enp = data.enp || null;
     const color = data.color || 'black';
     const lvl = data.level || 'medio';
-    const budgetMs = Math.max(200, +data.budgetMs || 1200);
+    const budgetMs = Math.max(400, +data.budgetMs || 2500);
     deadlineMs = Date.now() + (budgetMs - 50);
     if(!s){ postMessage({ move: null }); return; }
+    await ensureLocalBook();
     // book/tablebase primeiro
     let mv=null, src=null;
     let pcs=0; for(let y=0;y<8;y++) for(let x=0;x<8;x++) if(s[y][x]) pcs++;
@@ -305,6 +373,10 @@ onmessage = async function(e){
         }
       }
     }catch(_){ /* ignore */ }
+    // livro local (JSON derivado de PGN)
+    if(!mv && pcs>=24){
+      try{ const pm = pickBookMoveFromJson(localBook, s, color); if(pm){ mv=pm; src='localBook'; } }catch(_){}
+    }
     if(!mv && pcs<=7){ try{ mv = await fetchTablebaseMove(s, color); if(mv) src='tablebase'; }catch(_){} }
     if(!mv && pcs>=24){ try{ mv = await fetchLichessBookMove(s, color); if(mv) src='book'; }catch(_){} }
     // busca principal
@@ -318,7 +390,53 @@ onmessage = async function(e){
   }catch(_){ postMessage({ move: null }); }
 };
 
-function orderTal(ms, s, color){
+// SEE completo (Static Exchange Evaluation) simplificado e recursivo
+function fullSEEAfterCapture(s, mv, color){
+  try{
+    const val={P:100,N:320,B:330,R:510,Q:900,K:10000};
+    const x=mv.m.x, y=mv.m.y;
+    const board=clone(s);
+    const attacker = board[mv.y][mv.x];
+    const victim = board[y][x];
+    if(!attacker || !victim) return 0;
+    let gain=[]; let d=0;
+    function getAttackers(side){
+      const list=[];
+      for(let yy=0;yy<8;yy++) for(let xx=0;xx<8;xx++){
+        const p=board[yy][xx]; if(!p||p.c!==side) continue;
+        const ps=pseudoOn(board,xx,yy);
+        for(const m of ps){ if(m.x===x && m.y===y){ list.push({x:xx,y:yy,t:p.t}); break; } }
+      }
+      // ordenar por menor valor (pior atacante primeiro)
+      list.sort((a,b)=> (val[a.t]||0) - (val[b.t]||0));
+      return list;
+    }
+    let side=color;
+    let takenVal = val[victim.t]||0;
+    gain[0]=takenVal;
+    // remove atacante inicial
+    board[mv.y][mv.x]=null; board[y][x]=attacker;
+    while(true){
+      side = (side==='black') ? 'white' : 'black';
+      const atks = getAttackers(side);
+      if(atks.length===0) break;
+      const a0 = atks[0];
+      const pieceVal = val[board[a0.y][a0.x].t]||0;
+      d++;
+      gain[d] = takenVal - (gain[d-1]||0);
+      // realizar troca: mover atacante para a casa e remover peça
+      board[a0.y][a0.x]=null; // atacante sai
+      takenVal = pieceVal;
+      // troca: atacante ocupa o quadrado
+      board[y][x] = { t: board[a0.y] && board[a0.y][a0.x] ? board[a0.y][a0.x].t : 'P', c: side };
+    }
+    // retro-propagação: escolher melhor parada
+    for(let i=gain.length-2;i>=0;i--){ gain[i] = Math.max(-gain[i+1], gain[i]); }
+    return gain[0]||0;
+  }catch(_){ return 0; }
+}
+
+function orderTal(ms, s, color, ply, depth){
   // Priorizar cheques fortemente, depois capturas por MVV-LVA, depois demais
   const valMap={P:100,N:320,B:330,R:510,Q:900,K:10000};
   // Casas seguras do rei adversário: reduzir é progresso de mate
@@ -433,11 +551,33 @@ function orderTal(ms, s, color){
     return !!(pvBest && mv.x===pvBest.x && mv.y===pvBest.y && mv.m && pvBest.m && mv.m.x===pvBest.m.x && mv.m.y===pvBest.m.y);
   }
   
+  // Novo: quando em cheque, priorizar capturas da peça que dá cheque; fora de cheque, capturas com SEE positivo sobem
+  const inChk = isCheck(s, color);
+  let checkers = [];
+  if(inChk){ checkers = checkingPieces(s, color).map(a => a.x+'|'+a.y); }
+  
+  // PV tip: preferir o lance raiz da última iteração
+  const pvTip = (typeof pvMoveTip!=='undefined' && pvMoveTip) ? pvMoveTip : null;
   return ms.slice().sort((a,b)=>{
     // PV primeiro
     const aPV = isPV(a) ? 1 : 0;
     const bPV = isPV(b) ? 1 : 0;
+    if(ply===0 && pvTip){
+      const aTip = (pvTip && a.x===pvTip.x && a.y===pvTip.y && a.m && pvTip.m && a.m.x===pvTip.m.x && a.m.y===pvTip.m.y) ? 1 : 0;
+      const bTip = (pvTip && b.x===pvTip.x && b.y===pvTip.y && b.m && pvTip.m && b.m.x===pvTip.m.x && b.m.y===pvTip.m.y) ? 1 : 0;
+      if(aTip!==bTip) return bTip - aTip;
+    }
     if(aPV !== bPV) return bPV - aPV;
+    
+    // Em cheque: capturar a peça que dá cheque tem prioridade máxima
+    const aCap = !!a.m.cap, bCap = !!b.m.cap;
+    const aIsCheckerCap = inChk && aCap && (checkers.includes(a.m.x+'|'+a.m.y));
+    const bIsCheckerCap = inChk && bCap && (checkers.includes(b.m.x+'|'+b.m.y));
+    if(aIsCheckerCap !== bIsCheckerCap) return aIsCheckerCap ? -1 : 1;
+    // Fora/geral: capturas com melhor SEE primeiro
+    const aSee = aCap ? fullSEEAfterCapture(s, a, color) : 0;
+    const bSee = bCap ? fullSEEAfterCapture(s, b, color) : 0;
+    if(aSee !== bSee) return bSee - aSee;
     
     // Primeiro: evitar lances inseguros (não sacrificar peças valiosas só para checar)
     const aUnsafe = isMoveUnsafe(a)?1:0;
@@ -482,17 +622,18 @@ function orderTal(ms, s, color){
     const aPassiveKing = aIsKing && !a.m.cap && !aCheck ? 1 : 0;
     const bPassiveKing = bIsKing && !b.m.cap && !bCheck ? 1 : 0;
     if(aPassiveKing!==bPassiveKing) return aPassiveKing - bPassiveKing;
-    // killers e histórico
+    // killers e histórico com ponderação adaptativa
     let aKill=0, bKill=0;
-    const ksA = killerMoves.flat().filter(Boolean);
-    for(const k of ksA){
-      if(k.m && k.m.x===a.m.x && k.m.y===a.m.y && k.x===a.x && k.y===a.y) aKill++;
-      if(k.m && k.m.x===b.m.x && k.m.y===b.m.y && k.x===b.x && k.y===b.y) bKill++;
-    }
-    if(aKill!==bKill) return bKill - aKill;
-    const aHist = historyScores[color+'|'+a.m.x+'|'+a.m.y]||0;
-    const bHist = historyScores[color+'|'+b.m.x+'|'+b.m.y]||0;
-    if(aHist!==bHist) return bHist - aHist;
+    const ks = killerMoves[ply]||[];
+    if(ks[0] && a.m && ks[0].m && a.m.x===ks[0].m.x && a.m.y===ks[0].m.y && a.x===ks[0].x && a.y===ks[0].y) aKill += 3;
+    if(ks[1] && a.m && ks[1].m && a.m.x===ks[1].m.x && a.m.y===ks[1].m.y && a.x===ks[1].x && a.y===ks[1].y) aKill += 2;
+    if(ks[0] && b.m && ks[0].m && b.m.x===ks[0].m.x && b.m.y===ks[0].m.y && b.x===ks[0].x && b.y===ks[0].y) bKill += 3;
+    if(ks[1] && b.m && ks[1].m && b.m.x===ks[1].m.x && b.m.y===ks[1].m.y && b.x===ks[1].x && b.y===ks[1].y) bKill += 2;
+    const aHist = (historyScores[color+'|'+a.m.x+'|'+a.m.y]||0) / ((depth||1)+1);
+    const bHist = (historyScores[color+'|'+b.m.x+'|'+b.m.y]||0) / ((depth||1)+1);
+    const aKH = aKill*1.5 + aHist;
+    const bKH = bKill*1.5 + bHist;
+    if(aKH!==bKH) return bKH - aKH;
     // MVV-LVA em capturas
     if(ac && bc){
       const diff=mvv(b)-mvv(a);
@@ -506,22 +647,51 @@ function orderTal(ms, s, color){
   });
 }
 
+function hasNonPawnMaterial(s, side){
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const p=s[y][x];
+    if(p && p.c===side && p.t!=='P' && p.t!=='K') return true;
+  }
+  return false;
+}
+
+function normalizeMateScore(score, ply){
+  if(score > MATE_SCORE - 1000) return score - ply;
+  if(score < -MATE_SCORE + 1000) return score + ply;
+  return score;
+}
+function denormalizeMateScore(score, ply){
+  if(score > MATE_SCORE - 1000) return score + ply;
+  if(score < -MATE_SCORE + 1000) return score - ply;
+  return score;
+}
+function ttStore(key, entry){
+  const cur = TT.get(key);
+  if(!cur || (entry.depth >= cur.depth)) TT.set(key, entry);
+}
+
 function minimaxTal(s, d, a, b, max, ply=0){
   const color = max ? 'black' : 'white';
   const key = posKey(s, color);
   const tt = TT.get(key);
   if(tt && tt.depth >= d){
-    if(tt.flag==='EXACT') return { score: tt.score, best: tt.best };
-    if(tt.flag==='LOWER') a = Math.max(a, tt.score);
-    else if(tt.flag==='UPPER') b = Math.min(b, tt.score);
+    const ttScore = denormalizeMateScore(tt.score, ply);
+    if(tt.flag==='EXACT') return { score: ttScore, best: tt.best };
+    if(tt.flag==='LOWER') a = Math.max(a, ttScore);
+    else if(tt.flag==='UPPER') b = Math.min(b, ttScore);
     if(a>=b) return { score: tt.score, best: tt.best };
   }
+  
+  // Estado atual: se estamos em cheque, rastrear peças que estão dando o cheque
+  const inChkNow = isCheck(s, color);
+  const chkSet = inChkNow ? new Set(checkingPieces(s, color).map(a => a.x+'|'+a.y)) : null;
   
   // Null-move pruning: quando não está em cheque, tenta passar a vez para podar
   if(d >= 3 && !isCheck(s, color) && ply < 60){
     const prevEnp = enp;
     enp = null; // evitar en passant fantasmas durante null move
-    const r = minimaxTal(s, d - 2, a, b, !max, ply + 1);
+    const R = hasNonPawnMaterial(s, color) ? 2 : 3;
+    const r = minimaxTal(s, d - 1 - R, a, b, !max, ply + 1);
     enp = prevEnp;
     if(max){
       if(r.score >= b) return { score: r.score };
@@ -543,7 +713,7 @@ function minimaxTal(s, d, a, b, max, ply=0){
   let best=null;
   if(max){
     let me=-1e9, moveIndex=0;
-    for(const mv of orderTal(ms, s, color)){
+    for(const mv of orderTal(ms, s, color, ply, d)){
       const c=clone(s); apply(c, mv.x, mv.y, mv.m);
       const opp = 'white';
       const isChk = isCheck(c, opp);
@@ -566,8 +736,26 @@ function minimaxTal(s, d, a, b, max, ply=0){
       const isSac = isSacrificeMove(s, mv) && !isChk;
       const oppMob = allLegal(c, opp).length;
       let nextDepth = d - 1 + (isChk ? (oppMob<=3 ? 2 : 1) : 0);
-      if(!isChk && !isCap && d>=3 && moveIndex>=3) nextDepth = Math.max(1, nextDepth - 1);
+      // Extensão seletiva por promoção
+      const isPromo = mover && mover.t==='P' && ((color==='black'&&mv.m.y===0) || (color==='white'&&mv.m.y===7) || !!mv.m.prom);
+      if(isPromo) nextDepth = Math.max(nextDepth, d);
+      // LMR: reduzir lances tardios não PV, não killers, sem cheque/captura
+      const ttHere = TT.get(key);
+      const isPVNode = !!(ttHere && ttHere.best && mv.m && ttHere.best.m && mv.m.x===ttHere.best.m.x && mv.m.y===ttHere.best.m.y && mv.x===ttHere.best.x && mv.y===ttHere.best.y);
+      const ks = killerMoves[ply]||[];
+      const isKiller = !!((ks[0] && ks[0].m && mv.m && mv.m.x===ks[0].m.x && mv.m.y===ks[0].m.y && mv.x===ks[0].x && mv.y===ks[0].y) || (ks[1] && ks[1].m && mv.m && mv.m.x===ks[1].m.x && mv.m.y===ks[1].m.y && mv.x===ks[1].x && mv.y===ks[1].y));
+      if(!isChk && !isCap && d>2 && moveIndex>3 && !isPVNode && !isKiller){
+        const red = 1 + (moveIndex>10 ? 1 : 0);
+        nextDepth = Math.max(1, nextDepth - red);
+      }
       if(isSac && d>=3) nextDepth = Math.max(1, nextDepth - 2);
+      // Extensão: se estamos em cheque agora e a captura remove o atacante, estender profundidade
+      if(inChkNow && isCap){
+        const keyCap = mv.m.x+'|'+mv.m.y;
+        if(chkSet && chkSet.has(keyCap)){
+          nextDepth = Math.max(nextDepth, d);
+        }
+      }
       const r=minimaxTal(c, nextDepth, a, b, false, ply+1);
       if(r.score>me){ me=r.score; best=mv; }
       a=Math.max(a, me);
@@ -579,16 +767,16 @@ function minimaxTal(s, d, a, b, max, ply=0){
           const hk = color+'|'+mv.m.x+'|'+mv.m.y;
           historyScores[hk] = (historyScores[hk]||0) + (d*d);
         }
-        TT.set(key, { depth: d, score: me, best, flag: 'LOWER' });
+        ttStore(key, { depth: d, score: normalizeMateScore(me, ply), best, flag: 'LOWER' });
         return { score: me, best };
       }
       moveIndex++;
     }
-    TT.set(key, { depth: d, score: me, best, flag: 'EXACT' });
+    ttStore(key, { depth: d, score: normalizeMateScore(me, ply), best, flag: 'EXACT' });
     return { score: me, best };
   } else {
     let mi=1e9, moveIndex=0;
-    for(const mv of orderTal(ms, s, color)){
+    for(const mv of orderTal(ms, s, color, ply, d)){
       const c=clone(s); apply(c, mv.x, mv.y, mv.m);
       const opp = 'black';
       const isChk = isCheck(c, opp);
@@ -611,8 +799,26 @@ function minimaxTal(s, d, a, b, max, ply=0){
       const isSac = isSacrificeMove(s, mv) && !isChk;
       const oppMob = allLegal(c, opp).length;
       let nextDepth = d - 1 + (isChk ? (oppMob<=3 ? 2 : 1) : 0);
-      if(!isChk && !isCap && d>=3 && moveIndex>=3) nextDepth = Math.max(1, nextDepth - 1);
+      // Extensão seletiva por promoção
+      const isPromo = mover && mover.t==='P' && ((color==='black'&&mv.m.y===0) || (color==='white'&&mv.m.y===7) || !!mv.m.prom);
+      if(isPromo) nextDepth = Math.max(nextDepth, d);
+      // LMR: reduzir lances tardios não PV, não killers, sem cheque/captura
+      const ttHere = TT.get(key);
+      const isPVNode = !!(ttHere && ttHere.best && mv.m && ttHere.best.m && mv.m.x===ttHere.best.m.x && mv.m.y===ttHere.best.m.y && mv.x===ttHere.best.x && mv.y===ttHere.best.y);
+      const ks = killerMoves[ply]||[];
+      const isKiller = !!((ks[0] && ks[0].m && mv.m && mv.m.x===ks[0].m.x && mv.m.y===ks[0].m.y && mv.x===ks[0].x && mv.y===ks[0].y) || (ks[1] && ks[1].m && mv.m && mv.m.x===ks[1].m.x && mv.m.y===ks[1].m.y && mv.x===ks[1].x && mv.y===ks[1].y));
+      if(!isChk && !isCap && d>2 && moveIndex>3 && !isPVNode && !isKiller){
+        const red = 1 + (moveIndex>10 ? 1 : 0);
+        nextDepth = Math.max(1, nextDepth - red);
+      }
       if(isSac && d>=3) nextDepth = Math.max(1, nextDepth - 2);
+      // Extensão: se estamos em cheque agora e a captura remove o atacante, estender profundidade
+      if(inChkNow && isCap){
+        const keyCap = mv.m.x+'|'+mv.m.y;
+        if(chkSet && chkSet.has(keyCap)){
+          nextDepth = Math.max(nextDepth, d);
+        }
+      }
       const r=minimaxTal(c, nextDepth, a, b, true, ply+1);
       if(r.score<mi){ mi=r.score; best=mv; }
       b=Math.min(b, mi);
@@ -624,12 +830,12 @@ function minimaxTal(s, d, a, b, max, ply=0){
           const hk = color+'|'+mv.m.x+'|'+mv.m.y;
           historyScores[hk] = (historyScores[hk]||0) + (d*d);
         }
-        TT.set(key, { depth: d, score: mi, best, flag: 'UPPER' });
+        ttStore(key, { depth: d, score: normalizeMateScore(mi, ply), best, flag: 'UPPER' });
         return { score: mi, best };
       }
       moveIndex++;
     }
-    TT.set(key, { depth: d, score: mi, best, flag: 'EXACT' });
+    ttStore(key, { depth: d, score: normalizeMateScore(mi, ply), best, flag: 'EXACT' });
     return { score: mi, best };
   }
 }
@@ -897,6 +1103,13 @@ function evalAgg(s){
         score += (p.c==='black' ? -penalty : +penalty);
       }
     }
+    // Penalização explícita para dama pendurada (sem defesa)
+    if(p.t==='Q'){
+      if(att.count > 0 && def.count === 0){
+        const penalty = 450;
+        score += (p.c==='black' ? -penalty : +penalty);
+      }
+    }
   }
   // segurança do rei: bônus por colocar o rei adversário em xeque
   const inCheckWhite = isCheck(s,'white');
@@ -913,16 +1126,19 @@ function evalAgg(s){
   return score;
 }
 
+let pvMoveTip = null;
 function searchTalIterative(s, color, baseDepth){
   // limpa heurísticas por pesquisa
   for(let i=0;i<64;i++) killerMoves[i]=[null,null];
   for(const k of Object.keys(historyScores)) delete historyScores[k];
   let best=null;
   let lastScore=0;
+  const ASP_WIN = 50;
   for(let d=1; d<=baseDepth; d++){
     if(timeUp()) break;
     // aspiration window em torno do último score
-    let alpha = lastScore - 200, beta = lastScore + 200;
+    pvMoveTip = best; // dica PV da última iteração
+    let alpha = lastScore - ASP_WIN, beta = lastScore + ASP_WIN;
     let r = minimaxTal(s, d, alpha, beta, (color==='black'), 0);
     // se falhar alto/baixo, abre a janela
     if(r && typeof r.score==='number' && (r.score<=alpha || r.score>=beta)){
@@ -930,6 +1146,8 @@ function searchTalIterative(s, color, baseDepth){
     }
     if(r && r.best) best = r.best;
     if(r && typeof r.score==='number') lastScore = r.score;
+    // armazenar PV move por profundidade
+    if(best){ /* opcional: pvTable[d] = best; */ }
   }
   return best;
 }

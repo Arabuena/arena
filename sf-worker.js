@@ -21,17 +21,26 @@ async function initEngine(){
   try {
     // Buffer para os bytes do WASM (precisa existir fora do bloco de fetch)
     let u8 = null;
-    // Garanta que o Emscripten encontre o arquivo WASM correto
-    // O build "lite single" do npm usa um nome gerado. Temos
-    // "stockfish-17.1-lite-single-03e3232.wasm" na raiz.
-    // O locateFile substitui o caminho padrão (p.ex. "stockfish.wasm").
-    const wasmName = (typeof self.sfWasmFile === 'string' && self.sfWasmFile.length)
-      ? self.sfWasmFile
-      : 'stockfish.wasm';
+    // Pré-compilação opcional do módulo (referenciado depois na criação de opts)
+    let preMod = null;
+    // Modo multi-parte: sinal para deixar o loader buscar vários .wasm
+    const multipart = (self && self.sfWasmFile === '__multipart__');
+    // Preferir o artefato lite-single do pacote 17.1
+    const candidates = [];
+    if (!multipart && typeof self.sfWasmFile === 'string' && self.sfWasmFile.length) {
+      candidates.push(self.sfWasmFile);
+    }
+    candidates.push('stockfish-17.1-lite-single-03e3232.wasm');
+    candidates.push('stockfish.wasm');
+
     const baseOrigin = (typeof self.sfWasmOrigin === 'string' && self.sfWasmOrigin.length)
       ? self.sfWasmOrigin
       : ((self.location && self.location.origin) ? self.location.origin : '');
-    const wasmAbs = baseOrigin ? (baseOrigin.replace(/\/$/, '') + '/' + wasmName) : wasmName;
+
+    function abs(u){ return baseOrigin ? (baseOrigin.replace(/\/$/, '') + '/' + u) : u; }
+    // Construir lista de candidatos absolutos e definir wasmAbs padrão
+    const absCandidates = candidates.map(abs);
+    let wasmAbs = absCandidates[0] || abs('stockfish.wasm');
     const stockfishJsAbs = baseOrigin ? (baseOrigin.replace(/\/$/, '') + '/stockfish.js') : 'stockfish.js';
     self.Module = self.Module || {};
     // Se bytes foram enviados pelo frontend, use-os e pule fetch
@@ -45,6 +54,7 @@ async function initEngine(){
       }
     }
     // Prefetch WASM e injetar bytes diretamente com fallback
+    if (!multipart) {
     try {
       const fetchWasm = async (url) => {
         const res = await fetch(url, { method: 'GET' });
@@ -54,20 +64,39 @@ async function initEngine(){
         const bin = await res.arrayBuffer();
         return new Uint8Array(bin);
       };
-      // 1) Se não recebemos bytes, tenta URL absoluta configurada
-      if(!u8) u8 = await fetchWasm(wasmAbs);
+      // 1) Se não recebemos bytes, tenta cada candidato absoluto até achar um WASM válido
+      if(!u8){
+        for(const url of absCandidates){
+          try{
+            const tryBytes = await fetchWasm(url);
+            const m = (tryBytes.length>=4) ? [tryBytes[0],tryBytes[1],tryBytes[2],tryBytes[3]] : [];
+            const ok = m.length===4 && m[0]===0x00 && m[1]===0x61 && m[2]===0x73 && m[3]===0x6d;
+            if(ok && tryBytes.length>=4096){
+              u8 = tryBytes;
+              wasmAbs = url;
+              break;
+            }
+          }catch(_){ /* tenta próximo */ }
+        }
+      }
       let magic = (u8.length>=4) ? [u8[0],u8[1],u8[2],u8[3]] : [];
       let isWasm = magic.length===4 && magic[0]===0x00 && magic[1]===0x61 && magic[2]===0x73 && magic[3]===0x6d;
       try { console.log('SF dbg prefetch len', (u8 ? u8.length : 0), 'magic', magic); } catch(_){}
       // 2) Fallback: se bytes não forem WASM (ex.: 404 "Not Found"), tenta relativo
       if (!isWasm) {
-        try {
-          const fb = 'stockfish.wasm';
-          const u8fb = await fetchWasm(fb);
-          const m2 = (u8fb.length>=4) ? [u8fb[0],u8fb[1],u8fb[2],u8fb[3]] : [];
-          const ok2 = m2.length===4 && m2[0]===0x00 && m2[1]===0x61 && m2[2]===0x73 && m2[3]===0x6d;
-          if (ok2) { u8 = u8fb; magic = m2; isWasm = true; self.Module.wasmBinaryFile = fb; }
-        } catch(_){ /* mantém erro original */ }
+        // Tenta fallback relativo preferindo lite-single da 17.1 antes de stockfish.wasm genérico
+        const relFallbacks = [
+          'stockfish-17.1-lite-single-03e3232.wasm',
+          'stockfish.wasm'
+        ];
+        for(const fb of relFallbacks){
+          try {
+            const u8fb = await fetchWasm(fb);
+            const m2 = (u8fb.length>=4) ? [u8fb[0],u8fb[1],u8fb[2],u8fb[3]] : [];
+            const ok2 = m2.length===4 && m2[0]===0x00 && m2[1]===0x61 && m2[2]===0x73 && m2[3]===0x6d;
+            if (ok2 && u8fb.length>=4096) { u8 = u8fb; magic = m2; isWasm = true; wasmAbs = abs(fb); self.Module.wasmBinaryFile = wasmAbs; break; }
+          } catch(_){ /* tenta próximo */ }
+        }
       }
       if (!isWasm) {
         try { postMessage({ error: 'engine_init_failed', detail: 'wasm_magic_mismatch:'+magic.join(','), wasm: wasmAbs }); } catch(_){}
@@ -81,24 +110,38 @@ async function initEngine(){
       }
       self.Module.wasmBinary = u8;
       self.Module.wasmBinaryFile = self.Module.wasmBinaryFile || wasmAbs;
+      try { console.log('SF dbg chosen wasmAbs:', wasmAbs); } catch(_){}
       // Forçar uso do binário já carregado, evitando instantiationStreaming
+      // Pré-compila o módulo para garantir que o Emscripten não reprocessa bytes truncados
+      try {
+        preMod = await WebAssembly.compile(u8);
+        try { console.log('SF dbg precompile ok', { len: u8.length }); } catch(_){}
+      } catch(e){
+        try { postMessage({ error: 'engine_init_failed', detail: 'precompile_err:'+String(e&&e.message||e) }); } catch(_){}
+      }
+      if (preMod) {
+        try { self.Module.wasmModule = preMod; } catch(_){}
+      }
+
+      // NOVO: instanciar de forma síncrona e retornar exports
       self.Module.instantiateWasm = function(imports, successCallback){
         try {
-          try { console.log('SF dbg instantiateWasm len', (u8?u8.length:0)); } catch(_){}
-          WebAssembly.instantiate(u8, imports).then(result => {
-            try { successCallback(result.instance); } catch(_){ }
-          }).catch(err => {
-            try { postMessage({ error: 'engine_init_failed', detail: 'instantiate_err:'+String(err&&err.message||err) }); } catch(_){}
-          });
+          try { console.log('SF dbg instantiateWasm using preMod', { len: (u8?u8.length:0) }); } catch(_){}
+          const mod = preMod || new WebAssembly.Module(u8 instanceof Uint8Array ? u8 : new Uint8Array(u8));
+          const inst = new WebAssembly.Instance(mod, imports);
+          try { successCallback(inst); } catch(_){}
+          // Retorna exports imediatamente para satisfazer o loader do Emscripten
+          return inst.exports;
         } catch(e){
           try { postMessage({ error: 'engine_init_failed', detail: 'instantiate_throw:'+String(e&&e.message||e) }); } catch(_){}
+          return {};
         }
-        return {};
       };
     } catch (e) {
       try { postMessage({ error: 'engine_init_failed', detail: 'wasm_fetch_failed: ' + String(e && e.message || e), wasm: wasmAbs }); } catch(_){}
       engine = null;
       return;
+    }
     }
     self.Module.locateFile = function(path, dir){
       try {
@@ -115,8 +158,10 @@ async function initEngine(){
     self.Module.onAbort = function(reason){
       try { postMessage({ error: 'engine_init_failed', detail: String(reason||'abort'), wasm: wasmAbs }); } catch(_){}
     };
-    // Desabilitar streaming para evitar fetch interno do Emscripten; usar bytes já carregados
-    try { self.WebAssembly = self.WebAssembly || {}; self.WebAssembly.instantiateStreaming = undefined; } catch(_){}
+    // Desabilitar streaming para binário único; em multi-parte deixar o loader controlar
+    if (!multipart) {
+      try { self.WebAssembly = self.WebAssembly || {}; self.WebAssembly.instantiateStreaming = undefined; } catch(_){}
+    }
     // Debug: reportar caminhos e interceptar fetch/instantiate para entender a origem do erro
     try {
       try { console.log('SF dbg wasmAbs:', wasmAbs, 'sfJs:', stockfishJsAbs); } catch(_){}
@@ -125,9 +170,15 @@ async function initEngine(){
       self.Module.locateFile = function(path, dir){
         try {
           if (typeof path === 'string' && path.endsWith('.wasm')) {
-            const out = (self.Module && self.Module.wasmBinaryFile) ? self.Module.wasmBinaryFile : wasmAbs;
-            try { console.log('SF dbg locateFile', { in: path, out: out }); } catch(_){}
-            return out;
+            if (multipart) {
+              const outMp = abs(path);
+              try { console.log('SF dbg locateFile multipart', { in: path, out: outMp }); } catch(_){}
+              return outMp;
+            } else {
+              const out = (self.Module && self.Module.wasmBinaryFile) ? self.Module.wasmBinaryFile : wasmAbs;
+              try { console.log('SF dbg locateFile', { in: path, out: out }); } catch(_){}
+              return out;
+            }
           }
         } catch(_){}
         try {
@@ -147,7 +198,7 @@ async function initEngine(){
         };
       }
       // Intercepta WebAssembly.instantiate e força uso do buffer correto quando input for inválido/truncado
-      if (self.WebAssembly && typeof self.WebAssembly.instantiate === 'function'){
+      if (!multipart && self.WebAssembly && typeof self.WebAssembly.instantiate === 'function'){
         const _inst = self.WebAssembly.instantiate;
         self.WebAssembly.instantiate = function(modOrBytes, imports){
           try {
@@ -181,7 +232,7 @@ async function initEngine(){
         };
       }
       // Também intercepta WebAssembly.compile para evitar módulos compilados de bytes truncados
-      if (self.WebAssembly && typeof self.WebAssembly.compile === 'function'){
+      if (!multipart && self.WebAssembly && typeof self.WebAssembly.compile === 'function'){
         const _comp = self.WebAssembly.compile;
         self.WebAssembly.compile = function(modOrBytes){
           try {
@@ -214,7 +265,7 @@ async function initEngine(){
         };
       }
       // Intercepta WebAssembly.Module (construtor) para substituir bytes inválidos/truncados
-      if (self.WebAssembly && typeof self.WebAssembly.Module === 'function'){
+      if (!multipart && self.WebAssembly && typeof self.WebAssembly.Module === 'function'){
         const _Mod = self.WebAssembly.Module;
         self.WebAssembly.Module = function(modOrBytes){
           try {
@@ -249,7 +300,7 @@ async function initEngine(){
       // Interceptar XMLHttpRequest para servir bytes locais do WASM (caso o loader use XHR)
       try {
         const XHR = self.XMLHttpRequest;
-        if (XHR && XHR.prototype) {
+        if (!multipart && XHR && XHR.prototype) {
           const _open = XHR.prototype.open;
           const _send = XHR.prototype.send;
           XHR.prototype.open = function(method, url, async, user, password){
@@ -283,7 +334,7 @@ async function initEngine(){
     // Segunda camada: forçar qualquer fetch de .wasm a usar bytes locais
     try {
       const prevFetch = self.fetch;
-      if (typeof prevFetch === 'function') {
+      if (!multipart && typeof prevFetch === 'function') {
         self.fetch = function(url, opts){
           try {
             const u = String(url||'');
@@ -301,23 +352,39 @@ async function initEngine(){
       }
     } catch(_){ }
     importScripts(stockfishJsAbs); // precisa existir na raiz
-    const opts = {
-      locateFile: function(path, dir){
-        try {
-          if (typeof path === 'string') {
-            if (/^(?:https?:\/\/|blob:)/.test(path)) return path;
-            if (path.endsWith('.wasm')) return wasmAbs;
-          }
-        } catch(_){}
-        return (dir ? dir + path : path);
-      },
-      onAbort: function(reason){
-        try { postMessage({ error: 'engine_init_failed', detail: String(reason||'abort'), wasm: wasmAbs }); } catch(_){}
-      },
-      // Passar bytes WASM diretamente nas opções para o Emscripten
-      wasmBinary: u8,
-      wasmBinaryFile: wasmAbs
-    };
+    const opts = multipart
+      ? {
+        locateFile: function(path, dir){
+          try {
+            if (typeof path === 'string') {
+              if (/^(?:https?:\/\/|blob:)/.test(path)) return path;
+              if (path.endsWith('.wasm')) return abs(path);
+            }
+          } catch(_){}
+          return (dir ? dir + path : path);
+        },
+        onAbort: function(reason){
+          try { postMessage({ error: 'engine_init_failed', detail: String(reason||'abort'), wasm: 'multipart' }); } catch(_){}
+        }
+      }
+      : {
+        locateFile: function(path, dir){
+          try {
+            if (typeof path === 'string') {
+              if (/^(?:https?:\/\/|blob:)/.test(path)) return path;
+              if (path.endsWith('.wasm')) return wasmAbs;
+            }
+          } catch(_){}
+          return (dir ? dir + path : path);
+        },
+        onAbort: function(reason){
+          try { postMessage({ error: 'engine_init_failed', detail: String(reason||'abort'), wasm: wasmAbs }); } catch(_){}
+        },
+        // Passar bytes WASM diretamente nas opções para o Emscripten
+        wasmBinary: u8,
+        wasmBinaryFile: wasmAbs,
+        wasmModule: preMod
+      };
     engine = (typeof Stockfish === 'function') ? Stockfish(opts)
             : (typeof self.Stockfish === 'function') ? self.Stockfish(opts)
             : null;

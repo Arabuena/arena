@@ -60,8 +60,11 @@ let aiThinking = false;
 // Tempo de cálculo por lado para Stockfish
 window.sfTimeMsWhite = window.sfTimeMsWhite || 15000;
 window.sfTimeMsBlack = window.sfTimeMsBlack || 15000;
+// Valores de peças (material) usados nas avaliações da IA
+window.pieceValues = window.pieceValues || { P: 100, N: 320, B: 330, R: 500, Q: 900, K: 0 };
 // Caminho configurável para o arquivo WASM do Stockfish (usado pelo worker)
-window.sfWasmFile = window.sfWasmFile || 'stockfish.wasm';
+// Usar build multi-parte por padrão para máxima força (carregada via stockfish.js)
+window.sfWasmFile = window.sfWasmFile || '__multipart__';
 window.sfWasmOrigin = window.sfWasmOrigin || (location && location.origin ? location.origin : '');
 // Criação robusta de Web Worker com fallbacks
 async function ensureAIWorker(){
@@ -92,31 +95,6 @@ async function ensureAIWorker(){
 async function ensureSfWorker(){
   if(sfWorker) return sfWorker;
   
-  // Verificar se stockfish.js existe
-  let stockfishExists = false;
-  let wasmExists = false;
-  try {
-    const testRes = await fetch('stockfish.js', {method: 'HEAD'});
-    stockfishExists = testRes.ok;
-  } catch(_) { /* silencioso */ }
-  try {
-    const wasmPath = (window.sfWasmFile || 'stockfish.wasm');
-    const testWasm = await fetch(wasmPath, {method: 'HEAD'});
-    wasmExists = testWasm.ok;
-    if (!wasmExists) {
-      console.error('Stockfish WASM não acessível:', (location && location.origin ? location.origin + '/' + wasmPath : wasmPath));
-    }
-  } catch(e) {
-    console.error('Falha ao verificar WASM:', e);
-    wasmExists = false;
-  }
-  
-  if (!stockfishExists || !wasmExists) {
-    console.warn('Stockfish não encontrado ou WASM inacessível. Verifique stockfish.js e', window.sfWasmFile);
-    alert('Stockfish não encontrado. O motor Tal será usado como fallback.');
-    return null;
-  }
-  
   // Criar via URL absoluta e enviar configuração ao worker
   try{
     const wasmFile = String(window.sfWasmFile || 'stockfish.wasm');
@@ -135,12 +113,14 @@ async function ensureSfWorker(){
       (wasmOrigin ? wasmOrigin.replace(/\/$/, '') + '/' + wasmFile.replace(/^\//,'') : wasmFile),
       ('/' + wasmFile.replace(/^\//,''))
     ];
-    for(const url of candidates){
-      const ab = await tryFetchBinary(url);
-      if(ab){ wasmBytes = ab; break; }
+    if (wasmFile !== '__multipart__') {
+      for(const url of candidates){
+        const ab = await tryFetchBinary(url);
+        if(ab){ wasmBytes = ab; break; }
+      }
+      if(!wasmBytes){ console.warn('Não foi possível obter bytes do WASM via GET em nenhum caminho:', candidates); }
     }
-    if(!wasmBytes){ console.warn('Não foi possível obter bytes do WASM via GET em nenhum caminho:', candidates); }
-    const sfWorkerAbs = (location && location.origin ? location.origin.replace(/\/$/, '') + '/sf-worker.js' : 'sf-worker.js');
+    const sfWorkerAbs = (location && location.origin ? location.origin.replace(/\/$/, '') + '/sf-worker.js?v=' + Date.now() : 'sf-worker.js?v=' + Date.now());
     sfWorker = new Worker(sfWorkerAbs);
     try { 
       const cfg = { sfWasmFile: wasmFile, sfWasmOrigin: wasmOrigin, useBook: false, hashMb: 512, threads: 1, contempt: 0, moveOverhead: 100, ponder: false, multipv: 1, skill: 20, limitStrength: false };
@@ -1071,7 +1051,20 @@ function legalOn(s,x,y){
   }
   return ms.filter(m=>{const c=clone(s);apply(c,x,y,m);return !isCheck(c,p.c)})
 }
-function evalS(s){let score=0;const val={P:100,N:320,B:320,R:500,Q:900,K:0};let mobB=0,mobW=0;for(let y=0;y<8;y++)for(let x=0;x<8;x++){const p=s[y][x];if(!p)continue;score+=p.c==='black'?val[p.t]:-val[p.t];if(p.c==='black')mobB+=pseudoOn(s,x,y).length;else mobW+=pseudoOn(s,x,y).length}return score+0.1*(mobB-mobW)}
+function evalS(s){
+  let score=0;
+  const val = (window.pieceValues && typeof window.pieceValues==='object')
+    ? window.pieceValues
+    : { P:100, N:320, B:330, R:500, Q:900, K:0 };
+  let mobB=0, mobW=0;
+  for(let y=0;y<8;y++) for(let x=0;x<8;x++){
+    const p=s[y][x]; if(!p) continue;
+    score += (p.c==='black' ? (val[p.t]||0) : -(val[p.t]||0));
+    const mlen = pseudoOn(s,x,y).length;
+    if(p.c==='black') mobB += mlen; else mobW += mlen;
+  }
+  return score + 0.1*(mobB - mobW);
+}
 function aiEasy(color){const ms=allLegal(g,color);if(ms.length===0)return;const r=ms[Math.floor(Math.random()*ms.length)];doMove(r.x,r.y,r.m)}
 function aiMed(color){const ms=allLegal(g,color);if(ms.length===0)return;let best=ms[0],bs=-1e9;for(const mv of ms){const s=clone(g);apply(s,mv.x,mv.y,mv.m);let sc=evalS(s);sc = (color==='black')? sc : -sc; if(sc>bs){bs=sc;best=mv}}doMove(best.x,best.y,best.m)}
 function aiHard(color){const depth=compDepth();const s=clone(g);const r=minimax(s,depth,-1e9,1e9,(color==='black'));if(r&&r.best)doMove(r.best.x,r.best.y,r.best.m)}
@@ -1096,12 +1089,14 @@ function compDepthTal(){
 
 function evalAgg(s){
   // Avaliação agressiva: material + mobilidade reforçada + segurança do rei + controle de centro + avanço de peões
-  const val={P:100,N:320,B:330,R:510,Q:900,K:0};
+  const val = (window.pieceValues && typeof window.pieceValues==='object')
+    ? window.pieceValues
+    : { P:100, N:320, B:330, R:500, Q:900, K:0 };
   let score=0, mobB=0, mobW=0;
   for(let y=0;y<8;y++) for(let x=0;x<8;x++){
     const p=s[y][x]; if(!p) continue;
     // material
-    score += (p.c==='black'? val[p.t] : -val[p.t]);
+    score += (p.c==='black'? (val[p.t]||0) : -(val[p.t]||0));
     // mobilidade bruta
     const mlen = pseudoOn(s,x,y).length;
     if(p.c==='black') mobB += mlen; else mobW += mlen;
@@ -1169,7 +1164,8 @@ function evalAgg(s){
   return score;
 }
 
-function minimaxTal(s, d, a, b, max){
+function minimaxTal(s, d, a, b, max, ply){
+  if(typeof ply==='undefined') ply=0;
   const color = max ? 'black' : 'white';
   const ms = allLegal(s, color);
   // nó terminal ou profundidade 0: quiescence search para evitar efeito horizonte
@@ -1186,7 +1182,7 @@ function minimaxTal(s, d, a, b, max){
   let best=null;
   if(max){
     let me=-1e9;
-    for(const mv of orderTal(ms, s, color)){
+    for(const mv of orderTal(ms, s, color, ply)){
       const c=clone(s);
       apply(c, mv.x, mv.y, mv.m);
       // extensão por cheque
@@ -1208,7 +1204,14 @@ function minimaxTal(s, d, a, b, max){
         return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
       }
       if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: isChk }); continue; }
-      const r=minimaxTal(c, d-1+ext, a, b, false);
+      const pen = checkUncoveredPenalty(s, mv);
+      const r=minimaxTal(c, d-1+ext, a, b, false, ply+1);
+      if(pen>0){ r.score -= pen; }
+      try{
+        const ur0 = scholarThreatUrgency(s, 'black');
+        const ur1 = scholarThreatUrgency(c, 'black');
+        if(ur0>0 && ur1>=ur0){ r.score -= Math.min(120, 40*ur1); }
+      }catch(_){/* silencioso */}
       if(r.score>me){me=r.score;best=mv}
       a=Math.max(a, me);
       if(b<=a) break;
@@ -1216,7 +1219,7 @@ function minimaxTal(s, d, a, b, max){
     return { score: me, best };
   } else {
     let mi=1e9;
-    for(const mv of orderTal(ms, s, color)){
+    for(const mv of orderTal(ms, s, color, ply)){
       const c=clone(s);
       apply(c, mv.x, mv.y, mv.m);
       const opp = 'black';
@@ -1235,7 +1238,19 @@ function minimaxTal(s, d, a, b, max){
         return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
       }
       if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: (ext>0) }); continue; }
-      const r=minimaxTal(c, d-1+ext, a, b, true);
+      const pen = checkUncoveredPenalty(s, mv);
+      const r=minimaxTal(c, d-1+ext, a, b, true, ply+1);
+      if(pen>0){ r.score += pen; }
+      try{
+        const ur0 = scholarThreatUrgency(s, 'white');
+        const ur1 = scholarThreatUrgency(c, 'white');
+        if(ur0>0 && ur1>=ur0){ r.score += Math.min(120, 40*ur1); }
+      }catch(_){/* silencioso */}
+      try{
+        const ur0 = scholarThreatUrgency(s, 'white');
+        const ur1 = scholarThreatUrgency(c, 'white');
+        if(ur0>0 && ur1>=ur0){ r.score += Math.min(120, 40*ur1); }
+      }catch(_){/* silencioso */}
       if(r.score<mi){mi=r.score;best=mv}
       b=Math.min(b, mi);
       if(b<=a) break;
@@ -1341,7 +1356,89 @@ function evalAgg(s){
   return score;
 }
 
-function minimaxTal(s, d, a, b, max){
+// SEE simplificado e penalização de cheque sem cobertura
+// Heurísticas globais: histórico e killers
+window.talHistory = window.talHistory || {};
+window.talKillers = window.talKillers || {};
+function uciOfMove(mv){
+  const from = sq(mv.x, mv.y);
+  const to = sq(mv.m.x, mv.m.y);
+  return mv.m.promote ? (from+to+mv.m.promote.toLowerCase()) : (from+to);
+}
+function countAttackDefend(board, x, y, myColor){
+  const opp = myColor==='black' ? 'white' : 'black';
+  let att=0, def=0, minAtt=Infinity;
+  for(let yy=0; yy<8; yy++) for(let xx=0; xx<8; xx++){
+    const p=board[yy][xx]; if(!p) continue;
+    const ps=pseudoOn(board,xx,yy);
+    for(const m of ps){
+      if(m.x===x && m.y===y){
+        if(p.c===opp){ att++; const v=(window.pieceValues? window.pieceValues[p.t] : ({P:100,N:320,B:330,R:510,Q:900,K:10000})[p.t])||0; if(v<minAtt) minAtt=v; }
+        else def++;
+        break;
+      }
+    }
+  }
+  return {att, def, minAtt};
+}
+
+function simpleSEE(board, mv){
+  const val = window.pieceValues ? { ...window.pieceValues, K:10000 } : {P:100,N:320,B:330,R:510,Q:900,K:10000};
+  const mover = board[mv.y][mv.x]; if(!mover) return 0;
+  const victim = board[mv.m.y][mv.m.x];
+  const myVal = val[mover.t]||0;
+  const victimVal = victim ? (val[victim.t]||0) : 0;
+  const {att, def, minAtt} = countAttackDefend(board, mv.m.x, mv.m.y, mover.c);
+  if(att===0) return victimVal; // captura segura
+  if(def===0) return victimVal - myVal; // pendurada
+  if(minAtt <= myVal && att > def) return victimVal - myVal; // provável troca desfavorável
+  return victimVal; // neutro ou leve ganho
+}
+
+function checkUncoveredPenalty(board, mv){
+  const after = clone(board); apply(after, mv.x, mv.y, mv.m);
+  const mover = board[mv.y][mv.x]; if(!mover) return 0;
+  const opp = mover.c==='black' ? 'white' : 'black';
+  const isChk = isCheck(after, opp);
+  if(!isChk) return 0;
+  const val = window.pieceValues ? { ...window.pieceValues, K:10000 } : {P:100,N:320,B:330,R:510,Q:900,K:10000};
+  const myVal = val[mover.t]||0;
+  const destAttacked = attacked(after, mover.c, mv.m.x, mv.m.y);
+  const destDefended = attacked(after, opp, mv.m.x, mv.m.y);
+  if(destAttacked && !destDefended) return Math.min(myVal*0.8, 150);
+  if(destAttacked && destDefended){
+    const see = simpleSEE(board, mv);
+    if(see < 0) return Math.min(-see, Math.max(60, myVal*0.6));
+  }
+  return 0;
+}
+
+// Defesa contra padrões de mate rápido (f7/f2)
+function fSquare(color){ return color==='black' ? {x:5,y:6} : {x:5,y:1}; }
+function scholarThreatUrgency(board, color){
+  const {x,y} = fSquare(color);
+  const cnt = countAttackDefend(board, x, y, color);
+  let urgency = Math.max(0, cnt.att - cnt.def);
+  // ataque combinado de bispo e dama ao f7/f2 aumenta urgência
+  const opp = color==='black' ? 'white' : 'black';
+  let bishopAttack=false, queenAttack=false;
+  for(let yy=0; yy<8; yy++) for(let xx=0; xx<8; xx++){
+    const p=board[yy][xx]; if(!p || p.c!==opp) continue;
+    const ps=pseudoOn(board,xx,yy);
+    for(const m of ps){ if(m.x===x && m.y===y){ if(p.t==='B') bishopAttack=true; if(p.t==='Q') queenAttack=true; break; } }
+  }
+  if(bishopAttack && queenAttack) urgency += 1;
+  return urgency;
+}
+function defenseImprovement(board, mv, color){
+  const u0 = scholarThreatUrgency(board, color);
+  const c = clone(board); apply(c, mv.x, mv.y, mv.m);
+  const u1 = scholarThreatUrgency(c, color);
+  return u0 - u1;
+}
+
+function minimaxTal(s, d, a, b, max, ply){
+  if(typeof ply==='undefined') ply=0;
   const color = max ? 'black' : 'white';
   const ms = allLegal(s, color);
   // nó terminal ou profundidade 0: quiescence search para evitar efeito horizonte
@@ -1358,7 +1455,7 @@ function minimaxTal(s, d, a, b, max){
   let best=null;
   if(max){
     let me=-1e9;
-    for(const mv of orderTal(ms, s, color)){
+    for(const mv of orderTal(ms, s, color, ply)){
       const c=clone(s);
       apply(c, mv.x, mv.y, mv.m);
       // extensão por cheque
@@ -1379,15 +1476,24 @@ function minimaxTal(s, d, a, b, max){
         return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
       }
       if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover?.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: isChk }); continue; }
-      const r=minimaxTal(c, d-1+ext, a, b, false);
+      // Penalizar cheque sem cobertura
+      const pen = checkUncoveredPenalty(s, mv);
+      const r=minimaxTal(c, d-1+ext, a, b, false, ply+1);
+      if(pen>0){ r.score -= pen; }
       if(r.score>me){me=r.score;best=mv}
       a=Math.max(a, me);
-      if(b<=a) break;
+      if(b<=a){
+        const u = uciOfMove(mv);
+        const ks = window.talKillers[ply] || (window.talKillers[ply]=[]);
+        if(!ks.includes(u)){ window.talKillers[ply] = [u].concat(ks).slice(0,2); }
+        window.talHistory[u] = (window.talHistory[u]||0) + (d+1);
+        break;
+      }
     }
     return { score: me, best };
   } else {
     let mi=1e9;
-    for(const mv of orderTal(ms, s, color)){
+    for(const mv of orderTal(ms, s, color, ply)){
       const c=clone(s);
       apply(c, mv.x, mv.y, mv.m);
       const opp = 'black';
@@ -1406,10 +1512,19 @@ function minimaxTal(s, d, a, b, max){
         return destAttacked && !isChk && (victimVal < myVal) && !destDefended;
       }
       if(isSacrificeMoveLocal()){ logTal('Sacrifício bloqueado', { piece: mover?.t, from: sq(mv.x,mv.y), to: sq(mv.m.x,mv.m.y), check: (ext>0) }); continue; }
-      const r=minimaxTal(c, d-1+ext, a, b, true);
+      // Penalizar cheque sem cobertura
+      const pen = checkUncoveredPenalty(s, mv);
+      const r=minimaxTal(c, d-1+ext, a, b, true, ply+1);
+      if(pen>0){ r.score += pen; }
       if(r.score<mi){mi=r.score;best=mv}
       b=Math.min(b, mi);
-      if(b<=a) break;
+      if(b<=a){
+        const u = uciOfMove(mv);
+        const ks = window.talKillers[ply] || (window.talKillers[ply]=[]);
+        if(!ks.includes(u)){ window.talKillers[ply] = [u].concat(ks).slice(0,2); }
+        window.talHistory[u] = (window.talHistory[u]||0) + (d+1);
+        break;
+      }
     }
     return { score: mi, best };
   }
@@ -1437,9 +1552,11 @@ function qSearch(s, a, b, max){
   return max ? a : b;
 }
 
-function orderTal(ms, s, color){
+function orderTal(ms, s, color, ply){
   // Priorizar cheques, depois capturas por MVV-LVA, depois demais
-  const valMap = {P:100,N:320,B:330,R:510,Q:900,K:10000};
+  const valMap = window.pieceValues ? { ...window.pieceValues, K:10000 } : {P:100,N:320,B:330,R:510,Q:900,K:10000};
+  const killers = window.talKillers[ply||0] || [];
+  const ur = scholarThreatUrgency(s, color);
   function mvv(mv){
     const victim = s[mv.m.y][mv.m.x]; // no estado atual
     const attacker = s[mv.y][mv.x];
@@ -1470,6 +1587,15 @@ function orderTal(ms, s, color){
     return minAtt <= myVal;
   }
   return ms.slice().sort((a,b)=>{
+    // Killer moves primeiro
+    const ua = uciOfMove(a); const ub = uciOfMove(b);
+    const aK = killers.includes(ua)?1:0; const bK = killers.includes(ub)?1:0;
+    if(aK!==bK) return bK - aK;
+    if(ur>0){
+      const impA = defenseImprovement(s, a, color);
+      const impB = defenseImprovement(s, b, color);
+      if(impA!==impB) return impB - impA;
+    }
     // Segurança primeiro: lances inseguros depois
     const aUnsafe = isMoveUnsafe(a)?1:0;
     const bUnsafe = isMoveUnsafe(b)?1:0;
@@ -1495,7 +1621,10 @@ function orderTal(ms, s, color){
     const cB=clone(s); apply(cB,b.x,b.y,b.m);
     const mobA = allLegal(cA, color).length;
     const mobB = allLegal(cB, color).length;
-    return mobB - mobA;
+    if(mobB !== mobA) return mobB - mobA;
+    // histórico como último desempate
+    const ha = window.talHistory[ua]||0; const hb = window.talHistory[ub]||0;
+    return hb - ha;
   });
 }
 
