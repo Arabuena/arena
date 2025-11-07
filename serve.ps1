@@ -52,13 +52,15 @@ while ($true) {
       '.htm'  { $ct = 'text/html' }
       '.css'  { $ct = 'text/css' }
       '.js'   { $ct = 'application/javascript' }
+      '.wasm' { $ct = 'application/wasm' }
       '.svg'  { $ct = 'image/svg+xml' }
       default { $ct = 'application/octet-stream' }
     }
+    # HEAD deve retornar apenas cabeçalhos
     $header = "HTTP/1.1 200 OK`r`nContent-Type: $ct`r`nContent-Length: $($bytes.Length)`r`nConnection: close`r`n`r`n"
     $hbytes = [Text.Encoding]::ASCII.GetBytes($header)
     $stream.Write($hbytes, 0, $hbytes.Length)
-    $stream.Write($bytes, 0, $bytes.Length)
+    if ($method -ne 'HEAD') { $stream.Write($bytes, 0, $bytes.Length) }
   } catch {
     # ignora erros de conexão
   } finally {
